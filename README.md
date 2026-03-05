@@ -1,4 +1,4 @@
-# synthesia2midi
+# PianoVideoScribe
 
 Separate a Synthesia piano video into right-hand and left-hand MIDI tracks.
 Works by reading the video's color coding: green notes go to one track, blue notes to the other.
@@ -12,10 +12,10 @@ from the same video's audio — into two tracks that MuseScore can render as sta
 ## Quick start
 
 ```bash
-git clone https://github.com/yourusername/synthesia2midi
-cd synthesia2midi
+git clone https://github.com/yourusername/PianoVideoScribe
+cd PianoVideoScribe
 pip install -r requirements.txt
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 ```
 
 ---
@@ -58,7 +58,7 @@ EOF
 ```
 
 This produces a MIDI at 120 BPM / 384 TPB with raw audio timestamps (not quantized) —
-`synthesia2midi.py` handles the quantization.
+`pianovideoscribe.py` handles the quantization.
 
 ### Option B: use any existing MIDI
 
@@ -66,10 +66,10 @@ If you already have a MIDI that matches the video, use it directly.
 
 ---
 
-## Step 2: Run synthesia2midi.py
+## Step 2: Run pianovideoscribe.py
 
 ```bash
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 ```
 
 **All arguments:**
@@ -99,12 +99,12 @@ python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120
 
 If the hands look swapped:
 ```bash
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
 ```
 
 If detection is low (< 70%), try a different frame for keyboard detection:
 ```bash
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120 --frame 10 --dry-run
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --frame 10 --dry-run
 ```
 Look for a frame index where the keyboard is fully visible with no colored note bars on top of it.
 

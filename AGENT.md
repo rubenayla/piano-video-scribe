@@ -1,4 +1,4 @@
-# AGENT.md — synthesia2midi
+# AGENT.md — PianoVideoScribe
 
 AI agent reference. Everything here is verified to work. No further research needed.
 
@@ -40,7 +40,7 @@ Output: `transcription.mid` — 120 BPM, 384 TPB, raw audio timestamps (not quan
 ### 4. Separate hands
 
 ```bash
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm BPM
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM
 ```
 
 Replace `BPM` with the actual BPM of the song (see "Finding the BPM" below).
@@ -77,7 +77,7 @@ For MuseScore 3:
 Default is frame 5. Use `--dry-run` to test without writing output:
 
 ```bash
-python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm BPM --frame N --dry-run
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --frame N --dry-run
 ```
 
 Choose N such that:
@@ -89,7 +89,7 @@ Early frames (1–10) are usually safe. Avoid frames > ~100 — notes will be vi
 
 ### Color thresholds
 
-Hardcoded in `classify_hand()` in `synthesia2midi.py`:
+Hardcoded in `classify_hand()` in `pianovideoscribe.py`:
 
 ```python
 # Green (right hand by default): H 40–65, S > 100, V > 80

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-synthesia2midi — Separate a Synthesia piano video into right/left hand MIDI tracks.
+pianovideoscribe — Separate a Synthesia piano video into right/left hand MIDI tracks.
 
 Uses the video's color coding (green = right hand, blue = left hand) to assign
 each note from an input MIDI file to one of two output tracks.
 
 Typical usage:
-    python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120
+    python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 """
 
 import argparse
@@ -390,13 +390,13 @@ def parse_args():
         epilog="""
 Examples:
   # Full run
-  python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 
   # Dry run: detect keyboard only, print stats, exit
-  python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120 --dry-run
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --dry-run
 
   # If hands are swapped, flip green interpretation
-  python synthesia2midi.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
 """)
     p.add_argument('video', help='Path to Synthesia MP4 video')
     p.add_argument('midi', help='Path to input MIDI (e.g. from piano_transcription_inference)')
@@ -421,7 +421,7 @@ def main():
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
     green_is_right = (args.green_hand == 'right')
 
-    print("=== synthesia2midi ===\n")
+    print("=== pianovideoscribe ===\n")
     print(f"Video:       {args.video}")
     print(f"Input MIDI:  {args.midi}")
     print(f"Output MIDI: {args.output}")
