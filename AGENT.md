@@ -74,9 +74,9 @@ This saves the user from having to switch apps manually.
 
 ## Finding the BPM
 
-- Check the song's metadata on MusicBrainz, Songsterr, or a MIDI repository.
-- Use a tap-tempo tool (search "tap tempo" in any browser): tap the beat for ~10 seconds.
-- Listen for the kick drum or bass pulse and count beats per minute.
+**Ask the user.** Do not try to look it up online — most songs processed here are too niche
+for reliable online BPM databases.
+
 - As a sanity check: at BPM=81 and 16th quantization, the smallest note lasts 0.185s.
   If notes at that spacing are still merging in MuseScore, the BPM is likely wrong.
 
