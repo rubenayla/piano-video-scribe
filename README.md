@@ -1,7 +1,7 @@
 # PianoVideoScribe
 
-Separate a Synthesia piano video into right-hand and left-hand MIDI tracks.
-Works by reading the video's color coding: green notes go to one track, blue notes to the other.
+Convert a Synthesia piano video into a clean, hand-separated MIDI and PDF sheet music.
+Works by reading the video's color coding (green/blue per hand) to split notes into right and left hand tracks, then quantizes the result to a musical grid. Includes a Claude Code slash command so an AI agent can run the full pipeline — YouTube URL to sheet music PDF — autonomously.
 
 ## What is this
 
