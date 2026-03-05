@@ -361,6 +361,45 @@ def quantize_tick(tick, grid):
 # MIDI building
 # ---------------------------------------------------------------------------
 
+def make_monophonic(events):
+    """Force a list of note events to be monophonic: cut each note when the next begins.
+
+    Piano players often hold notes slightly into the next one for a legato feel or
+    because of pedal sustain. This overlap is musically intentional but creates
+    multiple simultaneous voices in the notation, making the sheet music look messy.
+    This function cuts each note_off to coincide with the next note_on, producing
+    a single clean voice that MuseScore renders as one unambiguous melody line.
+
+    Args:
+        events: list of (abs_tick, type, pitch, velocity) tuples.
+
+    Returns:
+        New list with overlapping note_offs moved to the next note_on tick.
+    """
+    result = []
+    active_note = None
+    active_idx = None  # index in result of the active note_on's paired note_off
+
+    for ev in sorted(events, key=lambda e: (e[0], e[1] != 'note_off')):
+        abs_tick, ev_type, pitch, vel = ev
+        if ev_type == 'note_on':
+            if active_note is not None and active_idx is not None:
+                # Cut the previous note at this tick
+                old = result[active_idx]
+                result[active_idx] = (abs_tick, 'note_off', old[2], 0)
+            active_note = pitch
+            result.append(ev)
+            # Placeholder for the paired note_off (will be appended later)
+            active_idx = None
+        elif ev_type == 'note_off':
+            if pitch == active_note:
+                active_note = None
+                active_idx = len(result)
+            result.append(ev)
+
+    return result
+
+
 def build_track(events, name, tempo_us):
     """Build a MidiTrack from a list of (abs_tick, type, pitch, velocity) events."""
     track = MidiTrack()
@@ -397,6 +436,9 @@ Examples:
 
   # If hands are swapped, flip green interpretation
   python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
+
+  # Clean up left hand notation (recommended for most songs)
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --monophonic-left
 """)
     p.add_argument('video', help='Path to Synthesia MP4 video')
     p.add_argument('midi', help='Path to input MIDI (e.g. from piano_transcription_inference)')
@@ -407,6 +449,10 @@ Examples:
                    help='Frame index for keyboard detection (default: 5, should be note-free)')
     p.add_argument('--green-hand', choices=['right', 'left'], default='right',
                    help='Which hand is shown in green in the video (default: right)')
+    p.add_argument('--monophonic-left', action='store_true',
+                   help='Force left hand to be monophonic: cut each note when the next begins. '
+                        'Recommended when the left hand plays one note at a time but holds notes '
+                        'slightly into the next (legato/pedal style). Produces much cleaner notation.')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
     return p.parse_args()
@@ -574,6 +620,10 @@ def main():
                     out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), SIXTEENTH) - tick_offset
                     ev = (max(0, out_tick), 'note_off', msg.note, 0)
                     (right_events if hand == 0 else left_events).append(ev)
+
+    if args.monophonic_left:
+        left_events = make_monophonic(left_events)
+        print("Monophonic left hand: overlapping notes trimmed")
 
     out_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
     t0 = MidiTrack()

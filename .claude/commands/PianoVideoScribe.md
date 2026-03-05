@@ -10,10 +10,10 @@ Read `~/repos/PianoVideoScribe/AGENT.md` for the exact commands. Run every step:
 1. Download the video with yt-dlp
 2. Extract audio with ffmpeg
 3. Transcribe audio → MIDI with piano_transcription_inference
-4. Run `pianovideoscribe.py` to separate hands
+4. Run `pianovideoscribe.py --monophonic-left` to separate hands (use `--monophonic-left` by default)
 5. Export to PDF with MuseScore CLI
+6. Open the result in MuseScore 4 for the user: `open -a "MuseScore 4" output.mid`
 
 If BPM is not provided in the arguments, figure it out before running step 4.
 
 Work in a song-specific subdirectory, e.g. `~/piano/songs/<song-name>/`.
-At the end, tell the user where the MIDI and PDF are, and give MuseScore import instructions.

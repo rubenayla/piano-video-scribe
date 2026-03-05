@@ -40,12 +40,17 @@ Output: `transcription.mid` — 120 BPM, 384 TPB, raw audio timestamps (not quan
 ### 4. Separate hands
 
 ```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --monophonic-left
 ```
 
 Replace `BPM` with the actual BPM of the song (see "Finding the BPM" below).
 
-### 5. Export to PDF
+`--monophonic-left` is recommended for most songs: piano players naturally hold bass notes slightly
+into the next note for a legato feel or because of pedal sustain. This overlap is musically a single
+voice but creates multiple simultaneous voices in the notation, producing a cluttered staff. The flag
+cuts each left-hand note when the next begins, giving MuseScore a clean single-voice bass line.
+
+### 5. Export to PDF and open for the user
 
 ```bash
 "/Applications/MuseScore 4.app/Contents/MacOS/mscore" output.mid -o sheet.pdf
@@ -57,6 +62,13 @@ For MuseScore 3:
 ```bash
 "/Applications/MuseScore 3.app/Contents/MacOS/mscore" output.mid -o sheet.pdf
 ```
+
+**Always open the result in MuseScore for the user** — do not just tell them the file path:
+```bash
+open -a "MuseScore 4" output.mid
+```
+
+This saves the user from having to switch apps manually.
 
 ---
 

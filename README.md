@@ -82,12 +82,26 @@ python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 | `--bpm` | **Required.** Real BPM of the song (e.g. `--bpm 81`) |
 | `--frame` | Frame used for keyboard detection (default: 5) |
 | `--green-hand` | Which hand is green: `right` (default) or `left` |
+| `--monophonic-left` | **Recommended for most songs.** Force left hand to one note at a time. |
 | `--dry-run` | Detect keyboard only, print stats, exit (use for calibration) |
+
+### About `--monophonic-left`
+
+When playing piano, it's natural to keep a bass note slightly pressed while the next note begins — it sounds better, especially with the sustain pedal. But technically that creates two simultaneous notes, which notation software counts as two separate voices. The result is a cluttered staff with rests and stems going in both directions that is hard to read.
+
+If the left hand part is melodically a single voice (one note at a time), `--monophonic-left` cuts each note exactly when the next one starts, producing a clean single-voice staff. The music sounds identical (the overlap was inaudible in the sheet anyway).
 
 ---
 
 ## Step 3: Open in MuseScore
 
+On macOS with MuseScore 4 installed, you can open the output directly from the terminal:
+
+```bash
+open -a "MuseScore 4" output.mid
+```
+
+Otherwise:
 1. Download [MuseScore 3](https://musescore.org/en/download) (free)
 2. Open the output MIDI: **File → Open**
 3. Before or after opening, set: **Edit → Preferences → Import → MIDI → Shortest note: 16th**
