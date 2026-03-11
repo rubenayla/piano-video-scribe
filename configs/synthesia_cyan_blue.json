@@ -1,0 +1,16 @@
+{
+  "name": "Synthesia (cyan-blue left hand)",
+  "notes": "Some Synthesia videos use cyan (H≈93) instead of blue (H≈110) for the left hand.",
+  "colors": {
+    "green": { "h_min": 40, "h_max": 65, "s_min": 100, "v_min": 80 },
+    "blue":  { "h_min": 85, "h_max": 125, "s_min": 80, "v_min": 80 }
+  },
+  "sampling": {
+    "y_offset_top": 90,
+    "y_offset_bot": 0,
+    "half_w": 10
+  },
+  "keyboard": {
+    "frame": 140
+  }
+}

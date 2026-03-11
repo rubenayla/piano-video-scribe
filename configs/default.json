@@ -1,0 +1,15 @@
+{
+  "name": "Default Synthesia",
+  "colors": {
+    "green": { "h_min": 40, "h_max": 65, "s_min": 100, "v_min": 80 },
+    "blue":  { "h_min": 100, "h_max": 120, "s_min": 80, "v_min": 80 }
+  },
+  "sampling": {
+    "y_offset_top": 90,
+    "y_offset_bot": 0,
+    "half_w": 10
+  },
+  "keyboard": {
+    "frame": 5
+  }
+}

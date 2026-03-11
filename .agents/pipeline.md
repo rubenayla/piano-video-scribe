@@ -40,15 +40,25 @@ Output: `transcription.mid` — 120 BPM, 384 TPB, raw audio timestamps (not quan
 ### 4. Separate hands
 
 ```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --monophonic-left
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --left-hand no-overlap
 ```
 
 Replace `BPM` with the actual BPM of the song (see "Finding the BPM" below).
 
-`--monophonic-left` is recommended for most songs: piano players naturally hold bass notes slightly
-into the next note for a legato feel or because of pedal sustain. This overlap is musically a single
-voice but creates multiple simultaneous voices in the notation, producing a cluttered staff. The flag
-cuts each left-hand note when the next begins, giving MuseScore a clean single-voice bass line.
+Each hand can be processed independently with `--right-hand MODE` and `--left-hand MODE`:
+
+- `normal` (default) — no processing, keep all notes as transcribed
+- `no-overlap` — cut held notes when the next onset arrives, but keep chords (simultaneous notes)
+  intact. Recommended for most songs: piano players naturally hold notes slightly into the next for
+  legato/pedal sustain, creating overlapping voices in the notation. This cleans it up while
+  preserving chordal voicing.
+- `monophonic` — strictly one note at a time (keeps highest for right hand, lowest for left).
+  Good when you want a single clean melody/bass line with no chords at all.
+
+Example with both hands processed:
+```bash
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --right-hand monophonic --left-hand no-overlap
+```
 
 ### 5. Export to PDF and open for the user
 
@@ -74,11 +84,69 @@ This saves the user from having to switch apps manually.
 
 ## Finding the BPM
 
-**Ask the user.** Do not try to look it up online — most songs processed here are too niche
-for reliable online BPM databases.
+If the user doesn't provide the BPM, detect it with librosa and **ask the user to confirm**:
 
-- As a sanity check: at BPM=81 and 16th quantization, the smallest note lasts 0.185s.
-  If notes at that spacing are still merging in MuseScore, the BPM is likely wrong.
+```python
+import librosa, numpy as np
+audio, sr = librosa.load('audio.wav', sr=None, mono=True)
+oenv = librosa.onset.onset_strength(y=audio, sr=sr)
+tg = librosa.feature.tempogram(onset_envelope=oenv, sr=sr)
+ac = np.mean(tg, axis=1)
+bpms = librosa.tempo_frequencies(tg.shape[0], sr=sr)
+# Filter to reasonable range and show top candidates
+mask = (bpms >= 40) & (bpms <= 200)
+top_idx = np.argsort(ac[mask])[::-1][:3]
+candidates = [(bpms[mask][i], ac[mask][i]) for i in top_idx]
+for bpm, strength in candidates:
+    print(f"  {bpm:.0f} BPM  (strength: {strength:.2f})")
+```
+
+Present the top 2–3 candidates to the user. Common pitfalls:
+- Librosa often picks **double-time** (e.g. 152 instead of 76). If the top two candidates
+  are in a 2:1 ratio with similar strength, the slower one is usually correct.
+- Do not try to look it up online — most songs processed here are too niche for reliable
+  online BPM databases.
+
+---
+
+## Config files
+
+Use `--config path/to/config.json` to load channel/video-specific settings (colors, sampling zone,
+keyboard frame). Configs live in `configs/` and can be reused across videos from the same source.
+
+```bash
+python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 67 --config configs/synthesia_cyan_blue.json
+```
+
+Config JSON structure:
+```json
+{
+  "name": "Description (informational only)",
+  "colors": {
+    "green": { "h_min": 40, "h_max": 65, "s_min": 100, "v_min": 80 },
+    "blue":  { "h_min": 85, "h_max": 125, "s_min": 80, "v_min": 80 }
+  },
+  "sampling": {
+    "y_offset_top": 90,
+    "y_offset_bot": 0,
+    "half_w": 10
+  },
+  "keyboard": {
+    "frame": 140
+  }
+}
+```
+
+- **colors**: HSV thresholds for green (right hand) and blue (left hand) detection
+- **sampling**: y_offset_top/bot are offsets from the detected white key row; half_w is the horizontal sample width
+- **keyboard.frame**: which video frame to use for keyboard detection (should be note-free)
+- Quantization and BPM are per-song, not in the config — pass them via CLI flags
+
+Available configs:
+- `configs/default.json` — Standard Synthesia colors (blue H=100–120)
+- `configs/synthesia_cyan_blue.json` — Synthesia videos using cyan left hand (H≈93, range 85–125)
+
+CLI `--frame` overrides the config's keyboard.frame when explicitly provided.
 
 ---
 
@@ -101,15 +169,14 @@ Early frames (1–10) are usually safe. Avoid frames > ~100 — notes will be vi
 
 ### Color thresholds
 
-Hardcoded in `classify_hand()` in `pianovideoscribe.py`:
+Defaults in `classify_hand()` — overridable via `--config`:
 
-```python
-# Green (right hand by default): H 40–65, S > 100, V > 80
-is_green = 40 <= h <= 65 and s > 100 and v > 80
-
-# Blue (left hand by default): H 100–120, S > 80, V > 80
-is_blue = 100 <= h <= 120 and s > 80 and v > 80
 ```
+Green (right hand): H 40–65, S > 100, V > 80
+Blue  (left hand):  H 100–120, S > 80, V > 80
+```
+
+To override, create a config JSON (see "Config files" above) or pass a matching existing one.
 
 If your video uses non-default colors, inspect a frame in any image editor or with:
 ```python
@@ -123,9 +190,8 @@ hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
 ### Y-sample zone
 
-Hardcoded in `main()` as `y_sample_top = 480`, `y_sample_bot = 600`.
-This covers the falling note bar and the lit key region in a typical 1280×720 Synthesia video.
-If using a different resolution or zoom level, adjust these values.
+Relative to detected white key row (`y_white`). Defaults: `y_offset_top=90`, `y_offset_bot=0`,
+sampling from `y_white - 90` to `y_white` (the lit key faces). Overridable via `--config`.
 
 ---
 
@@ -168,11 +234,12 @@ Dark edge artifacts at the left border of the frame can be detected as black key
 Filter any candidate with `center <= 20`.
 Already handled in `detect_keyboard()`.
 
-### MuseScore: 4-stave issue
+### MuseScore: separate instruments instead of grand staff
 
-If each MIDI track uses 2+ channels (e.g. ch 0 and ch 1), MuseScore creates 4 staves
-instead of 2. Fix: use only `channel=0` in all `note_on` / `note_off` messages.
-Already done in `build_track()`.
+If the two hand tracks use different MIDI channels (e.g. ch 0 and ch 1), MuseScore treats
+them as separate instruments instead of one piano grand staff. Fix: use `channel=0` for
+both hands. MuseScore assigns treble/bass clef based on pitch range automatically.
+Already done in `build_track()`. A conductor track (Track 0) is not needed.
 
 ### MuseScore: stale cache
 

@@ -10,6 +10,8 @@ Typical usage:
 """
 
 import argparse
+import json
+import os
 import sys
 from collections import deque
 
@@ -79,15 +81,20 @@ def detect_keyboard(cap, frame_idx=5):
     white_keys = regularize_positions(raw_white)
     print(f"Detected {len(raw_white)} raw white keys → {len(white_keys)} regularized")
 
-    # Auto-find y for black keys: just above white zone, has many dark pixels
+    # Auto-find y for black keys: scan upward from white key zone and pick
+    # the row with the most dark pixels that still has enough white pixels
+    # (the actual black-key body, not just the narrow gap between keys).
     y_black = y_white - 50
-    for y_scan in range(y_white - 5, y_white - 80, -1):
+    best_dark = 0
+    max_search = min(y_white - 5, h - 1)
+    min_search = max(y_white - int(h * 0.2), h // 2)
+    for y_scan in range(max_search, min_search, -1):
         row_test = hsv[y_scan, :]
         dark_count = int(np.sum(row_test[:, 2] < 80))
         white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
-        if 100 < dark_count < 700 and white_count > 200:
+        if dark_count > 100 and white_count > 200 and dark_count > best_dark:
+            best_dark = dark_count
             y_black = y_scan
-            break
     print(f"Black key scan y={y_black}")
 
     row_black = hsv[y_black, :]
@@ -109,7 +116,7 @@ def detect_keyboard(cap, frame_idx=5):
             in_key = False
 
     print(f"Detected {len(black_keys)} black keys")
-    return white_keys, black_keys
+    return white_keys, black_keys, y_white
 
 
 def regularize_positions(positions):
@@ -290,24 +297,32 @@ def sample_color(cap, frame_idx, x_center, y_top, y_bot, half_w=10):
     return float(h_ch[best]), float(s_ch[best]), float(v_ch[best])
 
 
-def classify_hand(h, s, v, green_is_right=True):
+def classify_hand(h, s, v, green_is_right=True, colors=None):
     """Classify a color sample as right hand (0), left hand (1), or unknown (None).
-
-    Synthesia default colors:
-        Green  H 40–65,  S > 100, V > 80  → one hand
-        Blue   H 100–120, S > 80,  V > 80  → other hand
 
     Args:
         h, s, v: HSV values (OpenCV scale: H in [0,179]).
         green_is_right: if True, green = right (0), blue = left (1). Flip if needed.
+        colors: dict with 'green' and 'blue' keys, each containing
+                h_min, h_max, s_min, v_min thresholds. Uses defaults if None.
 
     Returns:
         0 (right), 1 (left), or None.
     """
     if h is None or s is None:
         return None
-    is_green = 40 <= h <= 65 and s > 100 and v > 80
-    is_blue = 100 <= h <= 120 and s > 80 and v > 80
+
+    if colors is None:
+        colors = {
+            'green': {'h_min': 40, 'h_max': 65, 's_min': 100, 'v_min': 80},
+            'blue':  {'h_min': 100, 'h_max': 120, 's_min': 80, 'v_min': 80},
+        }
+
+    g = colors['green']
+    b = colors['blue']
+    is_green = g['h_min'] <= h <= g['h_max'] and s > g['s_min'] and v > g['v_min']
+    is_blue = b['h_min'] <= h <= b['h_max'] and s > b['s_min'] and v > b['v_min']
+
     if is_green:
         return 0 if green_is_right else 1
     if is_blue:
@@ -321,12 +336,8 @@ def fallback_hand(pitch, recent_right, recent_left):
     Falls back to: right if pitch >= 60 (middle C), left otherwise, when
     neither hand has any recent notes.
     """
-    if not recent_right and not recent_left:
+    if not recent_right or not recent_left:
         return 0 if pitch >= 60 else 1
-    if not recent_right:
-        return 1
-    if not recent_left:
-        return 0
     d_right = abs(pitch - np.mean(list(recent_right)))
     d_left = abs(pitch - np.mean(list(recent_left)))
     return 0 if d_right <= d_left else 1
@@ -361,46 +372,101 @@ def quantize_tick(tick, grid):
 # MIDI building
 # ---------------------------------------------------------------------------
 
-def make_monophonic(events):
-    """Force a list of note events to be monophonic: cut each note when the next begins.
+def remove_overlaps(events):
+    """Cut held notes when a new onset arrives, but keep chords intact.
 
-    Piano players often hold notes slightly into the next one for a legato feel or
-    because of pedal sustain. This overlap is musically intentional but creates
-    multiple simultaneous voices in the notation, making the sheet music look messy.
-    This function cuts each note_off to coincide with the next note_on, producing
-    a single clean voice that MuseScore renders as one unambiguous melody line.
+    Notes starting at the same tick are treated as a chord and kept together.
+    Notes held from a previous tick are cut short when any new note_on arrives.
+    This produces clean notation without destroying chordal voicing.
 
     Args:
         events: list of (abs_tick, type, pitch, velocity) tuples.
 
     Returns:
-        New list with overlapping note_offs moved to the next note_on tick.
+        New event list with no cross-onset overlaps.
     """
+    sorted_events = sorted(events, key=lambda e: (e[0], e[1] != 'note_off'))
     result = []
-    active_note = None
-    active_idx = None  # index in result of the active note_on's paired note_off
+    active = {}  # pitch -> note_on tick
 
-    for ev in sorted(events, key=lambda e: (e[0], e[1] != 'note_off')):
+    for ev in sorted_events:
         abs_tick, ev_type, pitch, vel = ev
         if ev_type == 'note_on':
-            if active_note is not None and active_idx is not None:
-                # Cut the previous note at this tick
-                old = result[active_idx]
-                result[active_idx] = (abs_tick, 'note_off', old[2], 0)
-            active_note = pitch
+            # End all notes from *previous* ticks (not same-tick chord mates)
+            to_end = [p for p, t in active.items() if t < abs_tick]
+            for p in to_end:
+                result.append((abs_tick, 'note_off', p, 0))
+                del active[p]
+            active[pitch] = abs_tick
             result.append(ev)
-            # Placeholder for the paired note_off (will be appended later)
-            active_idx = None
         elif ev_type == 'note_off':
-            if pitch == active_note:
-                active_note = None
-                active_idx = len(result)
-            result.append(ev)
+            if pitch in active:
+                result.append(ev)
+                del active[pitch]
 
     return result
 
 
-def build_track(events, name, tempo_us):
+def make_monophonic(events, keep='highest'):
+    """Force a list of note events to be monophonic (single voice).
+
+    At each tick where multiple note_ons occur (chords), keep only one note
+    (highest or lowest pitch). Then cut each note when the next one begins,
+    so no two notes overlap in time.
+
+    Args:
+        events: list of (abs_tick, type, pitch, velocity) tuples.
+        keep: 'highest' to keep the top note (melody), 'lowest' for bass.
+
+    Returns:
+        New list with exactly one note sounding at any time.
+    """
+    from collections import defaultdict
+
+    sorted_events = sorted(events, key=lambda e: (e[0], e[1] != 'note_off'))
+
+    # Group note_ons by tick, pick one per tick
+    tick_groups = defaultdict(list)
+    for ev in sorted_events:
+        if ev[1] == 'note_on':
+            tick_groups[ev[0]].append(ev)
+
+    kept_pitches = {}
+    for tick, group in tick_groups.items():
+        if len(group) == 1:
+            kept_pitches[tick] = {group[0][2]}
+        else:
+            best = max(group, key=lambda e: e[2]) if keep == 'highest' else min(group, key=lambda e: e[2])
+            kept_pitches[tick] = {best[2]}
+
+    kept_notes = set()
+    removed_notes = set()
+    result = []
+    active_pitch = None
+
+    for ev in sorted_events:
+        abs_tick, ev_type, pitch, vel = ev
+        if ev_type == 'note_on':
+            if pitch not in kept_pitches.get(abs_tick, set()):
+                removed_notes.add(pitch)
+                continue
+            if active_pitch is not None:
+                result.append((abs_tick, 'note_off', active_pitch, 0))
+            active_pitch = pitch
+            kept_notes.add(pitch)
+            result.append(ev)
+        elif ev_type == 'note_off':
+            if pitch in removed_notes:
+                removed_notes.discard(pitch)
+                continue
+            if pitch == active_pitch:
+                result.append(ev)
+                active_pitch = None
+
+    return result
+
+
+def build_track(events, name, tempo_us, channel=0):
     """Build a MidiTrack from a list of (abs_tick, type, pitch, velocity) events."""
     track = MidiTrack()
     track.name = name
@@ -411,9 +477,9 @@ def build_track(events, name, tempo_us):
         delta = max(0, abs_tick - prev)
         prev = abs_tick
         if ev_type == 'note_on':
-            track.append(Message('note_on', channel=0, note=pitch, velocity=vel, time=delta))
+            track.append(Message('note_on', channel=channel, note=pitch, velocity=vel, time=delta))
         else:
-            track.append(Message('note_off', channel=0, note=pitch, velocity=0, time=delta))
+            track.append(Message('note_off', channel=channel, note=pitch, velocity=0, time=delta))
     track.append(MetaMessage('end_of_track', time=0))
     return track
 
@@ -438,7 +504,10 @@ Examples:
   python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
 
   # Clean up left hand notation (recommended for most songs)
-  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --monophonic-left
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --left-hand no-overlap
+
+  # Single melody line in right hand, clean bass in left
+  python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --right-hand monophonic --left-hand no-overlap
 """)
     p.add_argument('video', help='Path to Synthesia MP4 video')
     p.add_argument('midi', help='Path to input MIDI (e.g. from piano_transcription_inference)')
@@ -449,23 +518,77 @@ Examples:
                    help='Frame index for keyboard detection (default: 5, should be note-free)')
     p.add_argument('--green-hand', choices=['right', 'left'], default='right',
                    help='Which hand is shown in green in the video (default: right)')
-    p.add_argument('--monophonic-left', action='store_true',
-                   help='Force left hand to be monophonic: cut each note when the next begins. '
-                        'Recommended when the left hand plays one note at a time but holds notes '
-                        'slightly into the next (legato/pedal style). Produces much cleaner notation.')
+    hand_choices = ['normal', 'no-overlap', 'monophonic']
+    p.add_argument('--right-hand', choices=hand_choices, default='no-overlap',
+                   help='Right hand processing: normal, '
+                        'no-overlap (default, cut held notes at next onset, keep chords), '
+                        'monophonic (single voice, highest note only)')
+    p.add_argument('--left-hand', choices=hand_choices, default='no-overlap',
+                   help='Left hand processing: normal, '
+                        'no-overlap (default, cut held notes at next onset, keep chords), '
+                        'monophonic (single voice, lowest note only)')
+    p.add_argument('--config', type=str, default=None,
+                   help='Path to a JSON config file (colors, sampling zone, keyboard frame). '
+                        'See configs/ directory for examples.')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
     return p.parse_args()
 
 
+def load_config(config_path):
+    """Load a JSON config file and return its contents as a dict.
+
+    Config files can override: colors (HSV thresholds for green/blue),
+    sampling zone (y offsets, half_w), and keyboard detection frame.
+    Missing keys fall back to defaults.
+    """
+    defaults = {
+        'colors': {
+            'green': {'h_min': 40, 'h_max': 65, 's_min': 100, 'v_min': 80},
+            'blue':  {'h_min': 100, 'h_max': 120, 's_min': 80, 'v_min': 80},
+        },
+        'sampling': {
+            'y_offset_top': 90,
+            'y_offset_bot': 0,
+            'half_w': 10,
+        },
+        'keyboard': {
+            'frame': 5,
+        },
+    }
+    if config_path is None:
+        return defaults
+
+    with open(config_path) as f:
+        cfg = json.load(f)
+
+    # Deep merge: config values override defaults (2 levels deep)
+    for section in defaults:
+        if section in cfg:
+            if isinstance(defaults[section], dict):
+                for key in cfg[section]:
+                    if isinstance(defaults[section].get(key), dict) and isinstance(cfg[section][key], dict):
+                        defaults[section][key].update(cfg[section][key])
+                    else:
+                        defaults[section][key] = cfg[section][key]
+            else:
+                defaults[section] = cfg[section]
+    return defaults
+
+
 def main():
     args = parse_args()
+    cfg = load_config(args.config)
 
     OUT_TPB = 960
     OUT_BPM = args.bpm
     OUT_US_PER_BEAT = int(60_000_000 / OUT_BPM)
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
+    THIRTYSECOND = OUT_TPB // 8  # ticks per 32nd note
     green_is_right = (args.green_hand == 'right')
+
+    # Config overrides for --frame (CLI takes precedence)
+    frame_idx = args.frame if args.frame != 5 else cfg['keyboard'].get('frame', 5)
 
     print("=== pianovideoscribe ===\n")
     print(f"Video:       {args.video}")
@@ -473,6 +596,8 @@ def main():
     print(f"Output MIDI: {args.output}")
     print(f"BPM:         {OUT_BPM}")
     print(f"Green hand:  {args.green_hand}")
+    if args.config:
+        print(f"Config:      {args.config}")
     print()
 
     # --- Load video ---
@@ -487,7 +612,7 @@ def main():
 
     # --- Step 1: Detect keyboard ---
     print("--- Step 1: Detect keyboard ---")
-    white_keys, black_keys = detect_keyboard(cap, frame_idx=args.frame)
+    white_keys, black_keys, y_white = detect_keyboard(cap, frame_idx=frame_idx)
 
     # --- Step 2: Build note → x map ---
     print("\n--- Step 2: Build note→x map ---")
@@ -547,10 +672,12 @@ def main():
     color_count = {0: 0, 1: 0, 'fallback': 0}
     unmatched_pitches = set()
 
-    # Color sample zone: covers falling note bar and lit key area
-    # (y ≈ 480–600 for typical 1280×720 Synthesia video)
-    y_sample_top = 480
-    y_sample_bot = 600
+    # Color sample zone: sample the lit key faces directly.
+    # Keys light up green/blue when pressed — more reliable than falling bars.
+    # Position relative to white key scan row (y_white), slightly above it.
+    y_sample_top = y_white - cfg['sampling']['y_offset_top']
+    y_sample_bot = y_white - cfg['sampling']['y_offset_bot']
+    half_w = cfg['sampling']['half_w']
 
     for abs_tick, pitch, vel in note_ons:
         t_sec = ticks_to_seconds(abs_tick)
@@ -561,8 +688,8 @@ def main():
         if pitch in note_x_map:
             x_center = note_x_map[pitch]
             hv, sv, vv = sample_color(cap, frame_idx, x_center,
-                                       y_sample_top, y_sample_bot, half_w=10)
-            hand = classify_hand(hv, sv, vv, green_is_right)
+                                       y_sample_top, y_sample_bot, half_w=half_w)
+            hand = classify_hand(hv, sv, vv, green_is_right, cfg['colors'])
             if hand is None:
                 unmatched_pitches.add(pitch)
         else:
@@ -592,7 +719,7 @@ def main():
     print("\n--- Step 4: Build quantized 2-track MIDI ---")
 
     first_note_sec = ticks_to_seconds(note_ons[0][0])
-    tick_offset = quantize_tick(int(seconds_to_out_ticks(first_note_sec)), SIXTEENTH)
+    tick_offset = quantize_tick(int(seconds_to_out_ticks(first_note_sec)), THIRTYSECOND)
     print(f"First note at {first_note_sec:.3f}s → removing {tick_offset} tick offset")
 
     right_events = []
@@ -609,7 +736,7 @@ def main():
                                             fallback_hand(msg.note, recent_right, recent_left))
                 active[msg.note] = hand
                 t_sec = ticks_to_seconds(abs_tick)
-                out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), SIXTEENTH) - tick_offset
+                out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), THIRTYSECOND) - tick_offset
                 ev = (max(0, out_tick), 'note_on', msg.note, msg.velocity)
                 (right_events if hand == 0 else left_events).append(ev)
 
@@ -617,19 +744,28 @@ def main():
                 if msg.note in active:
                     hand = active.pop(msg.note)
                     t_sec = ticks_to_seconds(abs_tick)
-                    out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), SIXTEENTH) - tick_offset
+                    out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), THIRTYSECOND) - tick_offset
                     ev = (max(0, out_tick), 'note_off', msg.note, 0)
                     (right_events if hand == 0 else left_events).append(ev)
 
-    if args.monophonic_left:
-        left_events = make_monophonic(left_events)
-        print("Monophonic left hand: overlapping notes trimmed")
+    for hand_name, hand_mode, events_ref in [
+        ('right', args.right_hand, 'right_events'),
+        ('left', args.left_hand, 'left_events'),
+    ]:
+        evts = locals()[events_ref]
+        if hand_mode == 'no-overlap':
+            evts = remove_overlaps(evts)
+            print(f"No-overlap {hand_name} hand: held notes cut at next onset, chords kept")
+        elif hand_mode == 'monophonic':
+            keep = 'highest' if hand_name == 'right' else 'lowest'
+            evts = make_monophonic(evts, keep=keep)
+            print(f"Monophonic {hand_name} hand: single voice ({keep} note)")
+        if hand_name == 'right':
+            right_events = evts
+        else:
+            left_events = evts
 
     out_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
-    t0 = MidiTrack()
-    t0.append(MetaMessage('set_tempo', tempo=OUT_US_PER_BEAT, time=0))
-    t0.append(MetaMessage('end_of_track', time=0))
-    out_mid.tracks.append(t0)
     out_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
     out_mid.tracks.append(build_track(left_events, 'Left Hand', OUT_US_PER_BEAT))
 
