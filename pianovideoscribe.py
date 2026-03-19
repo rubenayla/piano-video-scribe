@@ -207,11 +207,21 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
 
     c_start_idx = find_first_c(white_keys, black_keys)
 
-    # Determine C octave from MIDI range.
-    # A typical partial keyboard starts at A (3 semitones below C).
-    c_midi = ((min_midi_note + 3) // 12) * 12
-    if c_midi < 12:
-        c_midi = 12
+    # Determine C octave.  Two strategies depending on keyboard size:
+    n_white = len(white_keys)
+    if n_white >= 40:
+        # Large keyboard (near-full 88-key piano).  Assume the leftmost key
+        # is A0 (MIDI 21) and derive the first C from the keys before it.
+        # 0 keys before C → starts on C;  1 → B below;  2 → A, B below (standard piano)
+        BELOW_C_SEMITONES = [0, 1, 3, 5, 7, 8, 10]
+        semitones_below = BELOW_C_SEMITONES[min(c_start_idx, 6)]
+        c_midi = 21 + semitones_below - 12  # first C, shifted down one octave
+    else:
+        # Partial keyboard — estimate from MIDI note range (original heuristic).
+        c_midi = ((min_midi_note + 3) // 12) * 12
+        if c_midi < 12:
+            c_midi = 12
+
     print(f"c_start_idx={c_start_idx}, c_midi={c_midi} (min_note={min_midi_note})")
 
     note_x_map = {}
@@ -260,6 +270,42 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
 # Color sampling & hand classification
 # ---------------------------------------------------------------------------
 
+def build_detector_regions(note_x_map, white_keys, y_white):
+    """Compute detector bounds for each key: x-range and y-range.
+
+    Black keys are sampled in the upper zone (their body), white keys in the
+    lower zone (their face).  This prevents bleed: a lit white key glows at its
+    face level, which overlaps the black key gap — but NOT the black key body.
+
+    Returns:
+        dict mapping MIDI pitch → (x_left, x_right, y_top, y_bot).
+    """
+    BLACK_SEMITONES = {1, 3, 6, 8, 10}
+
+    if len(white_keys) > 1:
+        avg_white_w = np.mean(np.diff(white_keys))
+    else:
+        avg_white_w = 30
+
+    regions = {}
+    for pitch, x_center in note_x_map.items():
+        if pitch % 12 in BLACK_SEMITONES:
+            # Black key: tight x (±3px), mid-body y zone.
+            # Biased downward to avoid the sparkle/halo at the top of the key,
+            # but above the white key face zone to avoid white key bleed.
+            hw = 3
+            y_top = y_white - 80   # below the halo zone
+            y_bot = y_white - 40   # above the white key face zone
+        else:
+            # White key: inner portion, lower y zone (key face)
+            hw = int(avg_white_w * 0.25)
+            y_top = y_white - 30   # just the face area
+            y_bot = y_white + 5
+        regions[pitch] = (x_center - hw, x_center + hw, y_top, y_bot)
+
+    return regions
+
+
 def sample_color(cap, frame_idx, x_center, y_top, y_bot, half_w=10):
     """Sample the dominant saturated color at a note's position in a video frame.
 
@@ -295,6 +341,38 @@ def sample_color(cap, frame_idx, x_center, y_top, y_bot, half_w=10):
     s_bright[~bright] = 0
     best = int(np.argmax(s_bright))
     return float(h_ch[best]), float(s_ch[best]), float(v_ch[best])
+
+
+def sample_color_avg(hsv_frame, x_left, x_right, y_top, y_bot):
+    """Sample color by averaging bright saturated pixels in a detector region.
+
+    More robust than single-pixel max: resistant to sparkles and edge bleed.
+
+    Args:
+        hsv_frame: full frame already converted to HSV.
+        x_left, x_right: horizontal bounds of the detector region.
+        y_top, y_bot: vertical bounds of the sampling zone.
+
+    Returns:
+        (h, s, v) average of bright saturated pixels, or (None, None, None).
+    """
+    fh, fw = hsv_frame.shape[:2]
+    x1, x2 = max(0, x_left), min(fw, x_right)
+    y1, y2 = max(0, y_top), min(fh, y_bot)
+    if y1 >= y2 or x1 >= x2:
+        return None, None, None
+
+    region = hsv_frame[y1:y2, x1:x2]
+    h_ch = region[:, :, 0].flatten().astype(float)
+    s_ch = region[:, :, 1].flatten().astype(float)
+    v_ch = region[:, :, 2].flatten().astype(float)
+
+    # Keep only bright AND saturated pixels (the actual colored key face)
+    mask = (v_ch > 80) & (s_ch > 50)
+    if np.sum(mask) < 3:  # need at least a few pixels to trust the average
+        return None, None, None
+
+    return float(np.mean(h_ch[mask])), float(np.mean(s_ch[mask])), float(np.mean(v_ch[mask]))
 
 
 def classify_hand(h, s, v, green_is_right=True, colors=None):
@@ -344,6 +422,136 @@ def fallback_hand(pitch, recent_right, recent_left):
 
 
 # ---------------------------------------------------------------------------
+# Video-based note extraction
+# ---------------------------------------------------------------------------
+
+def _region_avg_saturation(hsv_frame, x_left, x_right, y_top, y_bot):
+    """Return the average saturation in a detector region."""
+    fh, fw = hsv_frame.shape[:2]
+    x1, x2 = max(0, x_left), min(fw, x_right)
+    y1, y2 = max(0, y_top), min(fh, y_bot)
+    if y1 >= y2 or x1 >= x2:
+        return 0.0
+    return float(np.mean(hsv_frame[y1:y2, x1:x2, 1]))
+
+
+def _region_avg_hue(hsv_frame, x_left, x_right, y_top, y_bot, s_min=50):
+    """Return the average hue of saturated pixels in a detector region."""
+    fh, fw = hsv_frame.shape[:2]
+    x1, x2 = max(0, x_left), min(fw, x_right)
+    y1, y2 = max(0, y_top), min(fh, y_bot)
+    if y1 >= y2 or x1 >= x2:
+        return None
+    region = hsv_frame[y1:y2, x1:x2]
+    h_ch = region[:, :, 0].flatten().astype(float)
+    s_ch = region[:, :, 1].flatten().astype(float)
+    mask = s_ch > s_min
+    if np.sum(mask) < 3:
+        return None
+    return float(np.mean(h_ch[mask]))
+
+
+def _classify_hand_from_hue(hue, green_is_right=True):
+    """Classify hand from average hue: green (40-65) = right, blue (85-125) = left."""
+    if hue is None:
+        return None
+    if 40 <= hue <= 65:
+        return 0 if green_is_right else 1
+    if 85 <= hue <= 125:
+        return 1 if green_is_right else 0
+    return None
+
+
+def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
+                             half_w, fps, total_frames, green_is_right, colors,
+                             start_frame=0, frame_step=1, white_keys=None):
+    """Extract notes from the video using frame-to-frame saturation delta.
+
+    Instead of checking absolute color, detects the *moment* a key changes
+    from neutral to colored (sudden saturation increase = note on, sudden
+    decrease = note off).  This is robust against falling note bars (which
+    create gradual color changes) vs actual key presses (sudden changes).
+
+    Args:
+        cap: OpenCV VideoCapture object.
+        note_x_map: dict mapping MIDI pitch → x pixel center.
+        y_sample_top, y_sample_bot: vertical bounds of the sampling zone.
+        half_w: horizontal half-width for sampling (fallback).
+        fps: video frame rate.
+        total_frames: total number of frames.
+        green_is_right: True if green = right hand (0).
+        colors: color config dict (or None for defaults).
+        start_frame: first frame to scan (skip intro).
+        frame_step: scan every Nth frame (1 = every frame, 2 = every other, etc.)
+        white_keys: list of white key x-centers (for computing detector bounds).
+
+    Returns:
+        List of (pitch, hand, onset_sec, offset_sec) tuples.
+    """
+    DELTA_ON = 30    # saturation increase threshold for note-on
+    DELTA_OFF = 30   # saturation decrease threshold for note-off
+    MIN_SAT = 80     # minimum absolute saturation to confirm note-on
+
+    # Build detector regions
+    if white_keys is not None:
+        det_regions = build_detector_regions(note_x_map, white_keys,
+                                            y_sample_bot)  # y_sample_bot ≈ y_white
+    else:
+        det_regions = {p: (x - half_w, x + half_w, y_sample_top, y_sample_bot)
+                       for p, x in note_x_map.items()}
+
+    pitches = sorted(note_x_map.keys())
+
+    # Previous frame's average saturation per key
+    prev_sat = {p: 0.0 for p in pitches}
+    # Active notes: pitch → (hand, onset_frame)
+    active = {}
+    notes = []
+
+    for f_idx in range(start_frame, total_frames, frame_step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        for pitch in pitches:
+            x_left, x_right, yt, yb = det_regions[pitch]
+            sat = _region_avg_saturation(hsv, x_left, x_right, yt, yb)
+            delta = sat - prev_sat[pitch]
+            prev_sat[pitch] = sat
+
+            if pitch not in active and delta > DELTA_ON and sat > MIN_SAT:
+                # Note on: sudden saturation increase + high absolute saturation
+                hue = _region_avg_hue(hsv, x_left, x_right, yt, yb)
+                hand = _classify_hand_from_hue(hue, green_is_right)
+                active[pitch] = (hand, f_idx)
+
+            elif pitch in active and delta < -DELTA_OFF:
+                # Note off: sudden saturation drop
+                hand, onset_frame = active.pop(pitch)
+                onset_sec = onset_frame / fps
+                offset_sec = f_idx / fps
+                if offset_sec - onset_sec > 0.02:  # ignore very short blips
+                    notes.append((pitch, hand, onset_sec, offset_sec))
+
+        if f_idx % 300 == 0 and f_idx > start_frame:
+            print(f"  Scanned frame {f_idx}/{total_frames} "
+                  f"({100*f_idx/total_frames:.0f}%) — {len(notes)} notes so far")
+
+    # Close remaining active notes
+    for pitch, (hand, onset_frame) in active.items():
+        onset_sec = onset_frame / fps
+        offset_sec = (total_frames - 1) / fps
+        if offset_sec - onset_sec > 0.02:
+            notes.append((pitch, hand, onset_sec, offset_sec))
+
+    notes.sort(key=lambda n: n[2])
+    return notes
+
+
+# ---------------------------------------------------------------------------
 # Tick conversion & quantization
 # ---------------------------------------------------------------------------
 
@@ -365,7 +573,24 @@ def make_tick_converters(orig_tpb, orig_bpm, out_tpb, out_bpm):
 
 
 def quantize_tick(tick, grid):
+    """Snap a tick to the nearest grid position."""
     return round(tick / grid) * grid
+
+
+def quantize_tick_smart(tick, eighth, sixteenth):
+    """Snap to 8th note grid unless clearly between two 8ths (then use 16th).
+
+    If the tick is within 25% of an 8th note boundary, snap to the 8th.
+    Otherwise, snap to the nearest 16th (the note is genuinely between 8ths).
+    """
+    nearest_8th = round(tick / eighth) * eighth
+    dist_to_8th = abs(tick - nearest_8th)
+    threshold = eighth * 0.40  # 40% of an 8th — absorbs frame-rate jitter
+
+    if dist_to_8th <= threshold:
+        return nearest_8th
+    # Genuinely between two 8ths — snap to 16th
+    return round(tick / sixteenth) * sixteenth
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +735,9 @@ Examples:
   python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --right-hand monophonic --left-hand no-overlap
 """)
     p.add_argument('video', help='Path to Synthesia MP4 video')
-    p.add_argument('midi', help='Path to input MIDI (e.g. from piano_transcription_inference)')
+    p.add_argument('midi', nargs='?', default=None,
+                   help='Path to input MIDI (optional — if omitted, extracts notes '
+                        'directly from the video)')
     p.add_argument('output', help='Path to output MIDI')
     p.add_argument('--bpm', type=int, required=True,
                    help='Actual BPM of the song (required)')
@@ -583,6 +810,7 @@ def main():
     OUT_TPB = 960
     OUT_BPM = args.bpm
     OUT_US_PER_BEAT = int(60_000_000 / OUT_BPM)
+    EIGHTH = OUT_TPB // 2     # ticks per 8th note
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
     THIRTYSECOND = OUT_TPB // 8  # ticks per 32nd note
     green_is_right = (args.green_hand == 'right')
@@ -592,7 +820,7 @@ def main():
 
     print("=== pianovideoscribe ===\n")
     print(f"Video:       {args.video}")
-    print(f"Input MIDI:  {args.midi}")
+    print(f"Source:      {'video (direct extraction)' if args.midi is None else args.midi}")
     print(f"Output MIDI: {args.output}")
     print(f"BPM:         {OUT_BPM}")
     print(f"Green hand:  {args.green_hand}")
@@ -614,28 +842,36 @@ def main():
     print("--- Step 1: Detect keyboard ---")
     white_keys, black_keys, y_white = detect_keyboard(cap, frame_idx=frame_idx)
 
+    y_sample_top = y_white - cfg['sampling']['y_offset_top']
+    y_sample_bot = y_white - cfg['sampling']['y_offset_bot']
+    half_w = cfg['sampling']['half_w']
+
     # --- Step 2: Build note → x map ---
     print("\n--- Step 2: Build note→x map ---")
-    mid = MidiFile(args.midi)
 
-    # Read original MIDI timing (piano_transcription default: 120 BPM, 384 TPB)
-    orig_tpb = mid.ticks_per_beat
-    orig_bpm = 120  # piano_transcription always outputs at 120 BPM
-    for track in mid.tracks:
-        for msg in track:
-            if msg.type == 'set_tempo':
-                orig_bpm = round(60_000_000 / msg.tempo)
-                break
+    if args.midi is not None:
+        # MIDI-based mode (fallback for non-keyboard videos)
+        mid = MidiFile(args.midi)
+        orig_tpb = mid.ticks_per_beat
+        orig_bpm = 120
+        for track in mid.tracks:
+            for msg in track:
+                if msg.type == 'set_tempo':
+                    orig_bpm = round(60_000_000 / msg.tempo)
+                    break
 
-    all_pitches = [msg.note for track in mid.tracks for msg in track
-                   if msg.type == 'note_on' and msg.velocity > 0]
-    if not all_pitches:
-        print("ERROR: No note_on events found in input MIDI.", file=sys.stderr)
-        sys.exit(1)
+        all_pitches = [msg.note for track in mid.tracks for msg in track
+                       if msg.type == 'note_on' and msg.velocity > 0]
+        if not all_pitches:
+            print("ERROR: No note_on events found in input MIDI.", file=sys.stderr)
+            sys.exit(1)
 
-    min_note, max_note = min(all_pitches), max(all_pitches)
-    print(f"MIDI pitch range: {min_note}–{max_note}  ({len(all_pitches)} notes)")
-    print(f"Original MIDI: tpb={orig_tpb}, bpm={orig_bpm}")
+        min_note = min(all_pitches)
+        print(f"MIDI pitch range: {min_note}–{max(all_pitches)}  ({len(all_pitches)} notes)")
+        print(f"Original MIDI: tpb={orig_tpb}, bpm={orig_bpm}")
+    else:
+        # Video-only mode — use full keyboard range
+        min_note = 21  # A0
 
     note_x_map = build_note_x_map(white_keys, black_keys, min_note)
 
@@ -644,109 +880,137 @@ def main():
         print(f"White keys detected: {len(white_keys)}")
         print(f"Black keys detected: {len(black_keys)}")
         print(f"Notes in x-map: {len(note_x_map)}")
-        unmapped = [p for p in set(all_pitches) if p not in note_x_map]
-        if unmapped:
-            print(f"Pitches NOT in x-map (will use fallback): {sorted(unmapped)}")
         cap.release()
         return
 
-    # --- Step 3: Assign hands via video color ---
-    print("\n--- Step 3: Assign hands via video color ---")
-    ticks_to_seconds, seconds_to_out_ticks = make_tick_converters(
-        orig_tpb, orig_bpm, OUT_TPB, OUT_BPM)
+    # --- Step 3: Extract notes ---
+    if args.midi is None:
+        # VIDEO-ONLY MODE: scan frames for key state changes
+        print("\n--- Step 3: Extract notes from video ---")
+        video_notes = extract_notes_from_video(
+            cap, note_x_map, y_sample_top, y_sample_bot,
+            half_w, fps, total_frames, green_is_right, cfg['colors'],
+            start_frame=frame_idx, frame_step=1, white_keys=white_keys)
+        cap.release()
 
-    # Collect all note-on events with absolute ticks
-    note_ons = []
-    for track in mid.tracks:
-        abs_tick = 0
-        for msg in track:
-            abs_tick += msg.time
-            if msg.type == 'note_on' and msg.velocity > 0:
-                note_ons.append((abs_tick, msg.note, msg.velocity))
-    note_ons.sort()
-    print(f"Note-on events: {len(note_ons)}")
+        right_count = sum(1 for _, h, _, _ in video_notes if h == 0)
+        left_count = sum(1 for _, h, _, _ in video_notes if h == 1)
+        print(f"Extracted {len(video_notes)} notes: right={right_count}, left={left_count}")
 
-    recent_right = deque(maxlen=5)
-    recent_left = deque(maxlen=5)
-    hand_assignments = {}
-    color_count = {0: 0, 1: 0, 'fallback': 0}
-    unmatched_pitches = set()
+        if not video_notes:
+            print("ERROR: No notes detected in video.", file=sys.stderr)
+            sys.exit(1)
 
-    # Color sample zone: sample the lit key faces directly.
-    # Keys light up green/blue when pressed — more reliable than falling bars.
-    # Position relative to white key scan row (y_white), slightly above it.
-    y_sample_top = y_white - cfg['sampling']['y_offset_top']
-    y_sample_bot = y_white - cfg['sampling']['y_offset_bot']
-    half_w = cfg['sampling']['half_w']
+        # Convert to quantized events
+        print("\n--- Step 4: Build quantized 2-track MIDI ---")
+        first_onset = video_notes[0][2]
+        # Snap tick_offset to nearest 8th — if it lands on a 16th, all
+        # subsequent notes will be half-eighth offset and nothing aligns.
+        tick_offset = quantize_tick(int(first_onset * OUT_TPB * OUT_BPM / 60), EIGHTH)
+        print(f"First note at {first_onset:.3f}s → removing {tick_offset} tick offset")
 
-    for abs_tick, pitch, vel in note_ons:
-        t_sec = ticks_to_seconds(abs_tick)
-        frame_idx = int(t_sec * fps)
-        frame_idx = max(0, min(frame_idx, total_frames - 1))
+        right_events = []
+        left_events = []
 
-        hand = None
-        if pitch in note_x_map:
-            x_center = note_x_map[pitch]
-            hv, sv, vv = sample_color(cap, frame_idx, x_center,
-                                       y_sample_top, y_sample_bot, half_w=half_w)
-            hand = classify_hand(hv, sv, vv, green_is_right, cfg['colors'])
-            if hand is None:
+        for pitch, hand, onset_sec, offset_sec in video_notes:
+            on_tick = quantize_tick_smart(int(onset_sec * OUT_TPB * OUT_BPM / 60), EIGHTH, SIXTEENTH) - tick_offset
+            off_tick = quantize_tick_smart(int(offset_sec * OUT_TPB * OUT_BPM / 60), EIGHTH, SIXTEENTH) - tick_offset
+            on_tick = max(0, on_tick)
+            off_tick = max(on_tick + 1, off_tick)
+            evts = right_events if hand == 0 else left_events
+            evts.append((on_tick, 'note_on', pitch, 80))
+            evts.append((off_tick, 'note_off', pitch, 0))
+
+    else:
+        # MIDI-BASED MODE: use MIDI notes, video for hand assignment
+        print("\n--- Step 3: Assign hands via video color ---")
+        ticks_to_seconds, seconds_to_out_ticks = make_tick_converters(
+            orig_tpb, orig_bpm, OUT_TPB, OUT_BPM)
+
+        note_ons = []
+        for track in mid.tracks:
+            abs_tick = 0
+            for msg in track:
+                abs_tick += msg.time
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    note_ons.append((abs_tick, msg.note, msg.velocity))
+        note_ons.sort()
+        print(f"Note-on events: {len(note_ons)}")
+
+        recent_right = deque(maxlen=5)
+        recent_left = deque(maxlen=5)
+        hand_assignments = {}
+        color_count = {0: 0, 1: 0, 'fallback': 0}
+        unmatched_pitches = set()
+
+        for abs_tick, pitch, vel in note_ons:
+            t_sec = ticks_to_seconds(abs_tick)
+            frame_idx = int(t_sec * fps)
+            frame_idx = max(0, min(frame_idx, total_frames - 1))
+
+            hand = None
+            if pitch in note_x_map:
+                x_center = note_x_map[pitch]
+                hv, sv, vv = sample_color(cap, frame_idx, x_center,
+                                           y_sample_top, y_sample_bot, half_w=half_w)
+                hand = classify_hand(hv, sv, vv, green_is_right, cfg['colors'])
+                if hand is None:
+                    unmatched_pitches.add(pitch)
+            else:
                 unmatched_pitches.add(pitch)
-        else:
-            unmatched_pitches.add(pitch)
 
-        if hand is None:
-            hand = fallback_hand(pitch, recent_right, recent_left)
-            color_count['fallback'] += 1
-        else:
-            color_count[hand] += 1
+            if hand is None:
+                hand = fallback_hand(pitch, recent_right, recent_left)
+                color_count['fallback'] += 1
+            else:
+                color_count[hand] += 1
 
-        hand_assignments[(abs_tick, pitch)] = hand
-        (recent_right if hand == 0 else recent_left).append(pitch)
+            hand_assignments[(abs_tick, pitch)] = hand
+            (recent_right if hand == 0 else recent_left).append(pitch)
 
-    total = len(note_ons)
-    r, l, fb = color_count[0], color_count[1], color_count['fallback']
-    detected_pct = round(100 * (r + l) / total) if total else 0
-    fallback_pct = round(100 * fb / total) if total else 0
-    print(f"Color detection: right={r}, left={l}, fallback={fb}")
-    print(f"Detection rate: {detected_pct}% color, {fallback_pct}% fallback")
-    if unmatched_pitches:
-        print(f"Pitches using fallback: {sorted(unmatched_pitches)}")
+        total = len(note_ons)
+        r, l, fb = color_count[0], color_count[1], color_count['fallback']
+        detected_pct = round(100 * (r + l) / total) if total else 0
+        fallback_pct = round(100 * fb / total) if total else 0
+        print(f"Color detection: right={r}, left={l}, fallback={fb}")
+        print(f"Detection rate: {detected_pct}% color, {fallback_pct}% fallback")
+        if unmatched_pitches:
+            print(f"Pitches using fallback: {sorted(unmatched_pitches)}")
 
-    cap.release()
+        cap.release()
 
-    # --- Step 4: Build quantized 2-track MIDI ---
-    print("\n--- Step 4: Build quantized 2-track MIDI ---")
+        # --- Step 4: Build quantized 2-track MIDI ---
+        print("\n--- Step 4: Build quantized 2-track MIDI ---")
 
-    first_note_sec = ticks_to_seconds(note_ons[0][0])
-    tick_offset = quantize_tick(int(seconds_to_out_ticks(first_note_sec)), THIRTYSECOND)
-    print(f"First note at {first_note_sec:.3f}s → removing {tick_offset} tick offset")
+        first_note_sec = ticks_to_seconds(note_ons[0][0])
+        tick_offset = quantize_tick(int(seconds_to_out_ticks(first_note_sec)), EIGHTH)
+        print(f"First note at {first_note_sec:.3f}s → removing {tick_offset} tick offset")
 
-    right_events = []
-    left_events = []
+        right_events = []
+        left_events = []
 
-    for track in mid.tracks:
-        abs_tick = 0
-        active = {}
-        for msg in track:
-            abs_tick += msg.time
+        for track in mid.tracks:
+            abs_tick = 0
+            active = {}
+            for msg in track:
+                abs_tick += msg.time
 
-            if msg.type == 'note_on' and msg.velocity > 0:
-                hand = hand_assignments.get((abs_tick, msg.note),
-                                            fallback_hand(msg.note, recent_right, recent_left))
-                active[msg.note] = hand
-                t_sec = ticks_to_seconds(abs_tick)
-                out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), THIRTYSECOND) - tick_offset
-                ev = (max(0, out_tick), 'note_on', msg.note, msg.velocity)
-                (right_events if hand == 0 else left_events).append(ev)
-
-            elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                if msg.note in active:
-                    hand = active.pop(msg.note)
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    hand = hand_assignments.get((abs_tick, msg.note),
+                                                fallback_hand(msg.note, recent_right, recent_left))
+                    active[msg.note] = hand
                     t_sec = ticks_to_seconds(abs_tick)
-                    out_tick = quantize_tick(int(seconds_to_out_ticks(t_sec)), THIRTYSECOND) - tick_offset
-                    ev = (max(0, out_tick), 'note_off', msg.note, 0)
+                    out_tick = quantize_tick_smart(int(seconds_to_out_ticks(t_sec)), EIGHTH, SIXTEENTH) - tick_offset
+                    ev = (max(0, out_tick), 'note_on', msg.note, msg.velocity)
                     (right_events if hand == 0 else left_events).append(ev)
+
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    if msg.note in active:
+                        hand = active.pop(msg.note)
+                        t_sec = ticks_to_seconds(abs_tick)
+                        out_tick = quantize_tick_smart(int(seconds_to_out_ticks(t_sec)), EIGHTH, SIXTEENTH) - tick_offset
+                        ev = (max(0, out_tick), 'note_off', msg.note, 0)
+                        (right_events if hand == 0 else left_events).append(ev)
 
     for hand_name, hand_mode, events_ref in [
         ('right', args.right_hand, 'right_events'),

@@ -1,0 +1,34 @@
+{
+  "description": "Synthesia video, two-hand, green right / blue left, 6/8 time",
+  "source_url": "https://youtu.be/DNENsyfKKI8",
+  "bpm": 90,
+  "beat_unit": "quarter",
+  "time_signature": [6, 8],
+  "keyboard": {
+    "frame": 250,
+    "white_keys_expected": 43,
+    "black_keys_expected": 36
+  },
+  "colors": {
+    "right_hand": "green",
+    "left_hand": "blue"
+  },
+  "first_notes": {
+    "left_hand": {
+      "pitch_name": "E",
+      "onset_sec_approx": [9.8, 10.5],
+      "comment": "Left hand enters first, single notes"
+    },
+    "right_hand": {
+      "pitch_name": "E",
+      "onset_sec_approx": [13.0, 14.5],
+      "comment": "Right hand enters ~3s after left, eighth notes at 180/min"
+    }
+  },
+  "checks": [
+    "Left hand starts before right hand",
+    "Right hand first note is E (octave TBD)",
+    "Right hand plays eighth notes (interval ~0.33s between onsets)",
+    "No black key bleed (adjacent black+white same hand same time = bleed)"
+  ]
+}
