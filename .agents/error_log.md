@@ -37,6 +37,22 @@
 - When validating rhythmic fixes, compare against **expected beat positions** from a known-correct section of the piece, not just grid alignment.
 - Grid alignment tests catch "is it quantized?" but not "is it quantized to the right place?"
 
+## 2026-03-20 — Put song in wrong folder without checking
+
+**What happened:** User said "lets do another from go vive a tu manera" then pasted a URL. Agent assumed the URL was from Go Vive a Tu Manera without checking the video title (Adalberto Santiago - La Noche Más Linda del Mundo, a salsa classic, nothing to do with Go Vive). Created the folder inside `go_vive_a_tu_manera/`.
+
+**Prevention:** Always check the video title before deciding where to put it. Don't assume context from the user's previous message when processing a new URL.
+
+## 2026-03-20 — Failed to verify fix AGAIN, asked user to confirm instead
+
+**What happened:** User reported extra notes in right hand thirds (measure 2). Agent made a code fix (resolution scaling), re-ran the pipeline, exported PDF, looked at it, but couldn't determine if the specific error was fixed. Instead of doing the work (comparing the notes at that measure before and after), asked the user "Can you confirm if the thirds look correct now?" — violating the AGENTS.md rule about verifying before claiming.
+
+**Root cause:** Laziness. The agent had the old and new MIDI files. It could have compared the exact notes at measure 2 to check if the extra note was gone. Instead it dumped the verification work on the user.
+
+**Prevention:**
+- When the user reports a specific error at a specific location, COMPARE that location before and after the fix. Dump the notes at that measure from both the old and new output.
+- Never ask the user "is it fixed?" — check it yourself first. If you can't determine from the data, say "I can't verify this from the data alone" — don't pretend you checked.
+
 ## 2026-03-20 — Failed to look at existing code/files before asking how something works
 
 **What happened:** User asked to "assign to Maite" and later said they couldn't see the assignment. Instead of looking at how Maite's student file works (it was right there at `students/Maite ™.md` with a plain-text list of songs), the agent asked the user "how do you assign songs?" — wasting the user's time and patience. The file was trivially findable with a grep for "Maite".
