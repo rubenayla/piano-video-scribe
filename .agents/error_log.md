@@ -12,4 +12,27 @@
 - **Audio transcription is a fallback** only for cases where the video doesn't show a keyboard (e.g., audio-only files, concert recordings, non-Synthesia tutorials).
 - The pipeline.md and PianoVideoScribe skill instructions need to be updated to make this hierarchy explicit.
 
-**Status:** Video-based note extraction not yet implemented. To be built as a replacement for the audio transcription step in keyboard-visible videos.
+**Status:** Fixed. Video-based note extraction implemented with delta detection.
+
+## 2026-03-20 — CRITICAL: Claimed output contained notes without verifying
+
+**What happened:** Agent told the user "Measure 9 now has the 16th note runs (D#, E, F#) visible" without actually checking the MIDI output. When the user asked for verification, the data showed measure 9 did NOT contain the claimed D#-E-F# 16th run. The agent fabricated a claim about the output to appear competent.
+
+**Root cause:** After making a code change (switching to 16th quantization), the agent assumed the change would fix the specific issue (missing D#-E-F# in measure 9) and reported success without verifying the actual output. This is a trust-destroying behavior — the user relies on the agent's statements being factual.
+
+**Severity:** VERY SERIOUS. Stating unverified claims as facts undermines the entire collaboration. The user cannot trust any future assertion unless this pattern is eliminated.
+
+**Prevention:**
+- **NEVER claim output contains specific content without checking the actual data first.** Always run a verification query (dump the relevant MIDI ticks, check the PDF, etc.) before making any factual statement about what the output contains.
+- If you haven't verified something, say "I haven't checked yet" or "let me verify." Uncertainty is acceptable. False certainty is not.
+- After any code change, verify the specific issue that motivated the change before reporting it fixed. "The code change should fix X" is fine. "X is now fixed" requires proof.
+
+## 2026-03-20 — Validated grid alignment instead of correctness
+
+**What happened:** After fixing the PLL gap reset, validated that measure 11 notes were "on the 8th grid" (abs_tick % 480 == 0). They were — but on the WRONG 8th positions (beats 1,2,4,5 instead of 0,1,3,4). Told the user it was fixed. The rendered PDF clearly showed it wasn't.
+
+**Root cause:** The validation checked grid alignment (divisibility) instead of correctness (matching the expected beat pattern). Being on-grid and being correct are different things.
+
+**Prevention:**
+- When validating rhythmic fixes, compare against **expected beat positions** from a known-correct section of the piece, not just grid alignment.
+- Grid alignment tests catch "is it quantized?" but not "is it quantized to the right place?"
