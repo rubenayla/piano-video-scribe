@@ -21,12 +21,15 @@ notes directly from the video — no audio transcription needed. The `midi` argu
 optional; omit it for video-only mode:
 
 ```bash
-python pianovideoscribe.py video.mp4 output.mid --bpm BPM --frame FRAME --right-hand monophonic --left-hand no-overlap
+python pianovideoscribe.py video.mp4 output.mid --bpm BPM --frame FRAME --right-hand monophonic --left-hand no-overlap --key KEY
 ```
 
-This scans every frame, detects which keys light up (using frame-to-frame saturation
-delta), classifies each as right hand (green) or left hand (blue), and outputs a
-two-track MIDI.
+This scans every frame, detects which keys are lit (absolute saturation threshold),
+classifies each as right hand (green) or left hand (blue), and outputs a two-track MIDI.
+
+- `--key` — Key signature (e.g. `E` for E major, `Em` for E minor). If omitted,
+  auto-detected via music21 Krumhansl-Schmuckler algorithm. MuseScore often gets key
+  signatures wrong without this — auto-detection is reliable for tonal music.
 
 - `--bpm` — **quarter-note BPM**. For 6/8 with dotted-quarter=60, use `--bpm 90`
   (quarter=90 means eighth=180, dotted-quarter=60).
@@ -122,20 +125,23 @@ hand colors. No config file needed — it suggests HSV ranges automatically.
 
 ## How the video detector works
 
-The note extraction uses **frame-to-frame saturation delta** detection:
+The note extraction uses **absolute saturation** detection with split y-zones:
 
 1. **Keyboard detection**: scans a clean frame for white/black key x-positions
 2. **Detector regions**: each key gets a tight sampling rectangle:
    - White keys: inner 50% of key width, at the key face level (y_white-30 to y_white+5)
-   - Black keys: ±3px from center, at the key body level (y_white-80 to y_white-40)
+   - Black keys: ±3px from center, at the key body level (y_white-120 to y_white-80)
    - The y-zone separation prevents white key glow from bleeding into black key detectors
-3. **Delta detection**: for each frame, computes avg saturation in each detector region.
-   - Saturation increase > 30 AND absolute saturation > 80 → note on
-   - Saturation decrease > 30 → note off
-   - This rejects falling note bars (gradual change) and detects key presses (sudden change)
+   - Zone offsets are configurable via cfg['detector']
+3. **Absolute saturation detection**: for each frame, computes avg saturation per key.
+   - Saturation > 70 → note on
+   - Saturation < 40 → note off
+   - The tight y-zones prevent falling note bars from triggering false positives
 4. **Hand classification**: average hue at note-on: green (H 40-65) = right, blue (H 85-125) = left
-5. **Smart quantization**: snaps to 8th note grid by default (40% tolerance), falls through
-   to 16th grid for notes clearly between two 8ths
+5. **PLL quantization**: phase-locked loop snaps onsets to 16th note grid.
+   - Self-corrects for BPM drift via exponential moving average (α=0.1)
+   - Resets phase after gaps > 2.5 sixteenths (snaps to nearest 8th)
+6. **Key signature**: auto-detected via music21 (Krumhansl-Schmuckler), or set with --key
 
 ---
 
