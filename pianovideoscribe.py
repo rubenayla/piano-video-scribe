@@ -535,25 +535,48 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
 
     pitches = sorted(note_x_map.keys())
 
+    # Pre-compute detector slices for bulk numpy extraction
+    # Group by y-zone to minimize per-pitch overhead
+    pitch_slices = []
+    for pitch in pitches:
+        x_left, x_right, yt, yb = det_regions[pitch]
+        pitch_slices.append((pitch, max(0, x_left), x_right, max(0, yt), yb))
+
     # Active notes: pitch → (hand, onset_frame)
     active = {}
     notes = []
 
+    # Seek once to start_frame, then read sequentially (much faster than
+    # seeking every frame — avoids H.264 keyframe backtracking)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    import time as _time
+    t0 = _time.time()
+
     for f_idx in range(start_frame, total_frames, frame_step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
         ret, frame = cap.read()
         if not ret:
             break
 
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Skip frames if frame_step > 1 (read but don't process)
+        if frame_step > 1:
+            for _ in range(frame_step - 1):
+                cap.read()
 
-        for pitch in pitches:
-            x_left, x_right, yt, yb = det_regions[pitch]
-            sat = _region_avg_saturation(hsv, x_left, x_right, yt, yb)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        sat_channel = hsv[:, :, 1]  # extract saturation once
+
+        for pitch, x1, x2, y1, y2 in pitch_slices:
+            if y1 >= y2 or x1 >= x2:
+                continue
+            sat = float(np.mean(sat_channel[y1:y2, x1:x2]))
 
             if pitch not in active and sat > SAT_ON:
-                # Note on: key is saturated
-                hue = _region_avg_hue(hsv, x_left, x_right, yt, yb)
+                # Note on: key is saturated — classify hand from hue
+                region = hsv[y1:y2, x1:x2]
+                h_ch = region[:, :, 0].flatten().astype(float)
+                s_ch = region[:, :, 1].flatten().astype(float)
+                mask = s_ch > 50
+                hue = float(np.mean(h_ch[mask])) if np.sum(mask) >= 3 else None
                 hand = _classify_hand_from_hue(hue, green_is_right)
                 active[pitch] = (hand, f_idx)
 
@@ -562,12 +585,16 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                 hand, onset_frame = active.pop(pitch)
                 onset_sec = onset_frame / fps
                 offset_sec = f_idx / fps
-                if offset_sec - onset_sec > 0.02:  # ignore very short blips
+                if offset_sec - onset_sec > 0.02:
                     notes.append((pitch, hand, onset_sec, offset_sec))
 
-        if f_idx % 300 == 0 and f_idx > start_frame:
-            print(f"  Scanned frame {f_idx}/{total_frames} "
-                  f"({100*f_idx/total_frames:.0f}%) — {len(notes)} notes so far")
+        if f_idx % 500 == 0 and f_idx > start_frame:
+            elapsed = _time.time() - t0
+            rate = (f_idx - start_frame) / elapsed if elapsed > 0 else 0
+            eta = (total_frames - f_idx) / rate if rate > 0 else 0
+            print(f"  Frame {f_idx}/{total_frames} "
+                  f"({100*f_idx/total_frames:.0f}%) — {len(notes)} notes "
+                  f"— {rate:.0f} fps, ETA {eta:.0f}s")
 
     # Close remaining active notes
     for pitch, (hand, onset_frame) in active.items():
