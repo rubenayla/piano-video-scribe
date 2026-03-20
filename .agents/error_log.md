@@ -36,3 +36,16 @@
 **Prevention:**
 - When validating rhythmic fixes, compare against **expected beat positions** from a known-correct section of the piece, not just grid alignment.
 - Grid alignment tests catch "is it quantized?" but not "is it quantized to the right place?"
+
+## 2026-03-20 — Failed to look at existing code/files before asking how something works
+
+**What happened:** User asked to "assign to Maite" and later said they couldn't see the assignment. Instead of looking at how Maite's student file works (it was right there at `students/Maite ™.md` with a plain-text list of songs), the agent asked the user "how do you assign songs?" — wasting the user's time and patience. The file was trivially findable with a grep for "Maite".
+
+**Root cause:** Laziness / defaulting to asking instead of investigating. The agent had all the tools needed (Grep, Read) to find the answer in seconds.
+
+**Severity:** HIGH. The user's instruction in CLAUDE.md is clear: "Search before saying 'that's not possible.'" The same principle applies: **search before asking**. Every unnecessary question wastes the user's time and erodes trust.
+
+**Prevention:**
+- When asked to do something in an unfamiliar system, ALWAYS search/grep first to understand how it currently works. Look at existing examples (other students, other assignments).
+- Never ask the user "how does X work?" when you can grep for X and find out yourself in seconds.
+- The user's files are the source of truth. Read them.
