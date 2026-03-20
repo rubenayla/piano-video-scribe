@@ -1173,9 +1173,34 @@ def main():
     out_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
     out_mid.tracks.append(build_track(left_events, 'Left Hand', OUT_US_PER_BEAT))
 
-    # Add key signature if specified
-    if args.key:
-        out_mid.tracks[0].insert(0, MetaMessage('key_signature', key=args.key, time=0))
+    # Add key signature: use --key if provided, otherwise auto-detect
+    key_sig = args.key
+    if not key_sig:
+        try:
+            from music21 import converter as m21_converter
+            score = m21_converter.parse(args.output)  # parse what we just built
+        except Exception:
+            score = None
+        if score is None:
+            # music21 not available or parse failed — save first, then try
+            out_mid.save(args.output)
+            try:
+                from music21 import converter as m21_converter
+                score = m21_converter.parse(args.output)
+            except Exception:
+                score = None
+        if score is not None:
+            detected = score.analyze('key')
+            # Convert music21 key to MIDI key_signature format
+            tonic = detected.tonic.name.replace('-', 'b')
+            if detected.mode == 'minor':
+                key_sig = tonic + 'm'
+            else:
+                key_sig = tonic
+            print(f"Key auto-detected: {detected} (confidence={detected.correlationCoefficient:.2f})")
+
+    if key_sig:
+        out_mid.tracks[0].insert(0, MetaMessage('key_signature', key=key_sig, time=0))
 
     out_mid.save(args.output)
 
