@@ -65,3 +65,14 @@
 - When asked to do something in an unfamiliar system, ALWAYS search/grep first to understand how it currently works. Look at existing examples (other students, other assignments).
 - Never ask the user "how does X work?" when you can grep for X and find out yourself in seconds.
 - The user's files are the source of truth. Read them.
+
+## 2026-03-25 — Manually patched MIDI output instead of fixing the detection bug
+
+**What happened:** "Lovely" by Billie Eilish & Khalid had 3 rogue left-hand notes (G#3, F#3, D#5 at m11-12) that were clearly detection artifacts — the video shows only E3 (cyan) held during those frames. Agent wrote a one-off Python script to remove the specific notes from the MIDI file instead of investigating and fixing the root cause in `pianovideoscribe.py`.
+
+**Root cause:** Taking the quick fix instead of the proper fix. The rogue notes are a symptom of a detection bug (likely color bleed, glowing key artifacts, or saturation threshold issues). Manually editing the output doesn't prevent the same bug from recurring on other videos.
+
+**Prevention:**
+- **NEVER manually fix MIDI output.** Always fix the underlying detection/processing code in `pianovideoscribe.py`.
+- When artifacts appear, investigate WHY they were detected: check the frames, the saturation values, the color classification. Then fix the code that produced the false detection.
+- Manual MIDI patching is a band-aid that masks bugs and makes them harder to find later.
