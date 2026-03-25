@@ -1,6 +1,9 @@
 # TODO
 
-"Keyboard detection failed — only found 1 white key. The default frame likely doesn't show the keyboard clearly. Let me check frame 0 vs a later frame." what caused it to fail?
+- [x] "Keyboard detection failed — only found 1 white key." — Fixed: auto-detect keyboard
+      frame by scanning forward for a frame with regularly-spaced white keys + black keys.
+      Cause: videos with intros have blank/title frames at the default frame 5.
+      Also falls back to auto-scan if a config-specified frame doesn't show a keyboard.
 
 - [ ] I want to use Karpathy's autoresearch algorithm to improve this software, but for that i need a clear metric of improvement. I dont know if i can trust you to manually check sheets or we can do other checks, like using videos with known melodies and count number of notes... maybe download more videos for those known melodies, or you can think of other better ways to check that the software is good. I'd like to try lots of different detections methods, resistant to glow sparkly stuff etc. And as generic as possible, so it works for many keyboards with just a few adjustments. As elegant as possible.
 - [x] Auto-detect BPM from audio using `librosa.beat.beat_track()` — done, `--bpm` is now optional.

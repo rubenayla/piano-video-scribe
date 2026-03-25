@@ -26,15 +26,38 @@ from mido import MidiFile, MidiTrack, Message, MetaMessage
 # ---------------------------------------------------------------------------
 
 def _frame_has_keyboard(frame):
-    """Quick check: does this frame show a piano keyboard in the bottom half?"""
+    """Check if this frame shows a piano keyboard by scanning for regularly-spaced white keys.
+
+    Runs a lightweight version of the white key scan: finds a row with many white pixels
+    AND dark gaps (black keys), then checks the white segments form a regular pattern
+    (at least 15 keys with consistent spacing).
+    """
     h, w = frame.shape[:2]
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # Scan bottom quarter for a row with many white keys
     for y in range(h - 5, h * 3 // 4, -5):
         row = hsv[y, :]
         white = int(np.sum((row[:, 1] < 60) & (row[:, 2] > 180)))
-        if white > 600:
-            return True
+        dark = int(np.sum(row[:, 2] < 80))
+        if white < 600 or dark < 50:
+            continue
+        # Count white key segments at this row
+        keys = []
+        in_k = False
+        sx = 0
+        for x in range(w):
+            is_w = int(row[x, 1]) < 60 and int(row[x, 2]) > 180
+            if is_w and not in_k:
+                in_k = True
+                sx = x
+            elif not is_w and in_k:
+                if x - sx > 8:
+                    keys.append((sx + x) // 2)
+                in_k = False
+        if len(keys) >= 15:
+            diffs = np.diff(keys)
+            cv = float(np.std(diffs) / np.mean(diffs)) if np.mean(diffs) > 0 else 999
+            if cv < 0.15:  # reasonably regular spacing
+                return True
     return False
 
 
@@ -55,18 +78,28 @@ def detect_keyboard(cap, frame_idx=None):
     Returns:
         (white_keys, black_keys, y_white, y_black).
     """
-    if frame_idx is None:
+    def _auto_find_keyboard_frame(cap):
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        # Scan every 30 frames (~0.5s at 60fps) up to 30s into the video
         for candidate in range(0, min(total, 1800), 30):
             cap.set(cv2.CAP_PROP_POS_FRAMES, candidate)
-            ret, frame = cap.read()
-            if ret and _frame_has_keyboard(frame):
-                frame_idx = candidate
-                break
-        if frame_idx is None:
-            frame_idx = 5  # fallback
-        print(f"Found keyboard at frame {frame_idx} ({frame_idx / cap.get(cv2.CAP_PROP_FPS):.1f}s)")
+            ret, frm = cap.read()
+            if ret and _frame_has_keyboard(frm):
+                return candidate
+        return 5  # fallback
+
+    if frame_idx is not None:
+        # Try the specified frame; if it doesn't show a keyboard, auto-scan
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if not ret or not _frame_has_keyboard(frame):
+            old = frame_idx
+            frame_idx = _auto_find_keyboard_frame(cap)
+            print(f"Frame {old} has no keyboard, auto-detected frame {frame_idx}")
+    else:
+        frame_idx = _auto_find_keyboard_frame(cap)
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    print(f"Found keyboard at frame {frame_idx} ({frame_idx / fps:.1f}s)")
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read()
