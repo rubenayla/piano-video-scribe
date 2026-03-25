@@ -545,6 +545,15 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
             hw = int(avg_white_w * det['white_x_ratio'])
             y_top = y_white - int(kb_h * det['white_y_top_pct'])
             y_bot = y_white - int(kb_h * det['white_y_bot_pct'])
+            # Shift detector for asymmetric keys: B/E have wider face on
+            # the right (no adjacent black key), C/F on the left. The
+            # color glow is offset toward the wider side, so centering
+            # on the geometric midpoint dilutes the saturation reading.
+            shift = int(avg_white_w * 0.15)
+            if pitch % 12 in (4, 11):   # E, B — wider right
+                x_center += shift
+            elif pitch % 12 in (0, 5):  # C, F — wider left
+                x_center -= shift
         regions[pitch] = (x_center - hw, x_center + hw, y_top, y_bot)
 
     return regions
