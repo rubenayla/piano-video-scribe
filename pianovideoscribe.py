@@ -1371,12 +1371,13 @@ def main():
 
         # Trim end-screen popup artifacts: YouTube end screens overlay colored
         # elements (mini keyboards, subscribe buttons) that trigger a burst of
-        # simultaneous false notes.  If the last timestamp has 4+ notes starting
-        # together, remove them — real music rarely has 4+ simultaneous onsets.
+        # simultaneous false notes.  If the last timestamp has 3+ notes starting
+        # together, remove them — real music rarely has 3+ simultaneous onsets
+        # at the very end.
         if video_notes:
             last_t = video_notes[-1][2]
             tail = [n for n in video_notes if abs(n[2] - last_t) < 0.1]
-            if len(tail) >= 4:
+            if len(tail) >= 3:
                 video_notes = [n for n in video_notes if abs(n[2] - last_t) >= 0.1]
                 print(f"  Trimmed {len(tail)} end-screen popup notes at {last_t:.1f}s")
 
