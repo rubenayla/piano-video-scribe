@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression test for PianoVideoScribe using test1 video.
+"""Regression test for piano-video-scribe using test1 video.
 
 Runs the video-only extraction pipeline and checks the output against
 known expected properties.

@@ -1,8 +1,10 @@
 # TODO
+
+"Keyboard detection failed — only found 1 white key. The default frame likely doesn't show the keyboard clearly. Let me check frame 0 vs a later frame." what caused it to fail?
+
 - [ ] I want to use Karpathy's autoresearch algorithm to improve this software, but for that i need a clear metric of improvement. I dont know if i can trust you to manually check sheets or we can do other checks, like using videos with known melodies and count number of notes... maybe download more videos for those known melodies, or you can think of other better ways to check that the software is good. I'd like to try lots of different detections methods, resistant to glow sparkly stuff etc. And as generic as possible, so it works for many keyboards with just a few adjustments. As elegant as possible.
-- [ ] Auto-detect BPM from audio using `librosa.beat.beat_track()` instead of asking the user.
+- [x] Auto-detect BPM from audio using `librosa.beat.beat_track()` — done, `--bpm` is now optional.
       Could also detect time signature (4/4, 3/4, etc.).
-      Reference: https://librosa.org/doc/latest/generated/librosa.beat.beat_track.html
 - [ ] Robustness against screen-recorded videos. Screen recordings from phones/tablets
       include navigation bars, status bars, and other UI overlays that sit on or near the
       keyboard region. Current fix: reject saturated pixels whose hue doesn't match any

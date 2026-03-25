@@ -25,20 +25,49 @@ from mido import MidiFile, MidiTrack, Message, MetaMessage
 # Keyboard detection
 # ---------------------------------------------------------------------------
 
-def detect_keyboard(cap, frame_idx=5):
+def _frame_has_keyboard(frame):
+    """Quick check: does this frame show a piano keyboard in the bottom half?"""
+    h, w = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    # Scan bottom quarter for a row with many white keys
+    for y in range(h - 5, h * 3 // 4, -5):
+        row = hsv[y, :]
+        white = int(np.sum((row[:, 1] < 60) & (row[:, 2] > 180)))
+        if white > 600:
+            return True
+    return False
+
+
+def detect_keyboard(cap, frame_idx=None):
     """Detect white and black key x-centers from a clean keyboard frame (no notes).
 
     Uses HSV analysis to find the white-key row automatically (scans bottom-up
     for the first row with many white pixels and few dark pixels), then detects
     black keys just above that zone.
 
+    If frame_idx is None, auto-scans forward from frame 0 to find the first
+    frame showing a keyboard (handles videos with intros/title screens).
+
     Args:
         cap: OpenCV VideoCapture object.
-        frame_idx: Frame index to use — should be early and note-free (default 5).
+        frame_idx: Frame index to use (auto-detected if None).
 
     Returns:
-        (white_keys, black_keys): lists of x-pixel centers.
+        (white_keys, black_keys, y_white, y_black).
     """
+    if frame_idx is None:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # Scan every 30 frames (~0.5s at 60fps) up to 30s into the video
+        for candidate in range(0, min(total, 1800), 30):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, candidate)
+            ret, frame = cap.read()
+            if ret and _frame_has_keyboard(frame):
+                frame_idx = candidate
+                break
+        if frame_idx is None:
+            frame_idx = 5  # fallback
+        print(f"Found keyboard at frame {frame_idx} ({frame_idx / cap.get(cv2.CAP_PROP_FPS):.1f}s)")
+
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read()
     if not ret:
@@ -1359,8 +1388,8 @@ def main():
     GRID_TICKS = OUT_TPB // GRID_SUBDIVISIONS  # ticks per grid unit (80 or 240)
     green_is_right = (args.green_hand == 'right')
 
-    # Config overrides for --frame (CLI takes precedence)
-    frame_idx = args.frame if args.frame != 5 else cfg['keyboard'].get('frame', 5)
+    # Config overrides for --frame (CLI takes precedence, None = auto-detect)
+    frame_idx = args.frame if args.frame is not None else cfg['keyboard'].get('frame', None)
 
     print("=== pianovideoscribe ===\n")
     print(f"Video:       {args.video}")

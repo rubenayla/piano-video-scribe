@@ -10,7 +10,7 @@
 **Prevention:**
 - **Video-based extraction is the primary approach** for Synthesia videos (or any video with a visible keyboard). The keyboard detector + color detector already identify which keys are pressed and by which hand — use this to extract notes directly.
 - **Audio transcription is a fallback** only for cases where the video doesn't show a keyboard (e.g., audio-only files, concert recordings, non-Synthesia tutorials).
-- The pipeline.md and PianoVideoScribe skill instructions need to be updated to make this hierarchy explicit.
+- The pipeline.md and piano-video-scribe skill instructions need to be updated to make this hierarchy explicit.
 
 **Status:** Fixed. Video-based note extraction implemented with delta detection.
 

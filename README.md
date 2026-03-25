@@ -1,4 +1,4 @@
-# PianoVideoScribe
+# piano-video-scribe
 
 Convert a [Synthesia](https://synthesiagame.com) piano video into a clean, hand-separated MIDI and PDF sheet music.
 Works by reading the video's color coding (green/blue per hand) to split notes into right and left hand tracks, then quantizes the result to a musical grid. Includes a Claude Code slash command so an AI agent can run the full pipeline — YouTube URL to sheet music PDF — autonomously.
@@ -12,8 +12,8 @@ from the same video's audio — into two tracks that MuseScore can render as sta
 ## Quick start
 
 ```bash
-git clone https://github.com/yourusername/PianoVideoScribe
-cd PianoVideoScribe
+git clone https://github.com/rubenayla/piano-video-scribe
+cd piano-video-scribe
 pip install -r requirements.txt
 python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
 ```
@@ -139,13 +139,13 @@ Look for a frame index where the keyboard is fully visible with no colored note 
 
 If you're using a Claude Code agent (or similar), you can delegate the full pipeline with a single prompt. Clone this repo first, then say:
 
-> Use the PianoVideoScribe repo (`~/repos/PianoVideoScribe`) to transcribe this Synthesia video: `https://youtu.be/VIDEO_ID`. The BPM is 120. Give me the final MIDI and MuseScore instructions.
+> Use the piano-video-scribe repo (`~/repos/piano-video-scribe`) to transcribe this Synthesia video: `https://youtu.be/VIDEO_ID`. The BPM is 120. Give me the final MIDI and MuseScore instructions.
 
 The agent will read `AGENT.md` for the full pipeline and handle everything — downloading, transcription, hand separation, and output.
 
 If you don't know the BPM, say so and the agent will figure it out.
 
-This repo includes a `.claude/commands/PianoVideoScribe.md` file, so the `/PianoVideoScribe` slash command is available automatically in any Claude Code session opened inside the repo directory.
+This repo includes a `.claude/commands/PianoVideoScribe.md` file, so the `/PianoVideoScribe` slash command is available automatically in any Claude Code session opened inside the repo directory. (The command file keeps its original name for compatibility.)
 
 ---
 

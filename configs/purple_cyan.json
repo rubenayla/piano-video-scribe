@@ -1,0 +1,11 @@
+{
+  "name": "Purple right hand, cyan left hand",
+  "notes": "Some Synthesia videos use purple (H≈168) for right hand and cyan (H≈92) for left hand. Uses direct right/left color keys.",
+  "colors": {
+    "right": { "h_min": 115, "h_max": 145, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 80, "h_max": 100, "s_min": 80, "v_min": 80 }
+  },
+  "keyboard": {
+    "frame": 250
+  }
+}

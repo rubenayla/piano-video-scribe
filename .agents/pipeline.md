@@ -1,5 +1,5 @@
 <!-- reference — read when relevant -->
-# PianoVideoScribe — Agent Pipeline Reference
+# piano-video-scribe — Agent Pipeline Reference
 
 AI agent reference. Everything here is verified to work.
 
@@ -48,18 +48,23 @@ classifies each as right hand (green) or left hand (blue), and outputs a two-tra
 
 MuseScore 4 prints QML type warnings — harmless, ignore them.
 
-**Always open the result in MuseScore for the user:**
-```bash
-open -a "MuseScore 4" output.mid
+**Do NOT open files automatically.** Just give the user the file path to click:
+```
+output.mid
 ```
 
-### Always create a README.md with the YouTube URL
+### Output location
 
-Every song folder should have a `README.md` with at minimum:
-```markdown
-# Song Title — Artist
+`~/piano` is a symlink to the Obsidian vault (`~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Piano`). There is only ONE song folder — the working directory IS the Obsidian folder.
 
-https://youtu.be/VIDEO_ID
+Use **kebab-case** for new songs. Existing songs keep their current names — rename
+opportunistically when touching them, not in bulk.
+```
+~/piano/songs/<song-name>/
+  <song-name>.pdf          ← sheet music
+  <song-name>.md           ← audio YouTube URL for the student
+  README.md                ← video URL, BPM, key, colors (for reproducibility)
+  video.mp4, output.mid, config.json, ...  ← working files
 ```
 
 ### Important: MuseScore overrides MIDI tempo
@@ -96,7 +101,13 @@ python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --le
 
 ## Finding the BPM
 
-If the user doesn't provide the BPM, detect it with librosa and **ask the user to confirm**:
+`--bpm` is now optional — if omitted, the tool auto-detects BPM from the video audio
+using `librosa.beat.beat_track()`. It halves double-time results automatically.
+
+**Always verify the detected BPM** — librosa often gets it wrong (double-time, half-time,
+or compound-time confusion). If the auto-detected BPM is wrong, override with `--bpm`.
+
+For manual detection, use the tempogram approach and **ask the user to confirm**:
 
 ```python
 import librosa, numpy as np

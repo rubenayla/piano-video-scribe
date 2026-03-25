@@ -1,12 +1,12 @@
 ---
-description: Full pipeline from Synthesia YouTube video to hand-separated MIDI (and optionally PDF). Reads ~/repos/PianoVideoScribe/.agents/pipeline.md for all steps.
+description: Full pipeline from Synthesia YouTube video to hand-separated MIDI (and optionally PDF). Reads ~/repos/piano-video-scribe/.agents/pipeline.md for all steps.
 ---
 
-Use `~/repos/PianoVideoScribe` to run the full pipeline for this Synthesia video:
+Use `~/repos/piano-video-scribe` to run the full pipeline for this Synthesia video:
 
 $ARGUMENTS
 
-Read `~/repos/PianoVideoScribe/.agents/pipeline.md` for the exact commands. Run every step:
+Read `~/repos/piano-video-scribe/.agents/pipeline.md` for the exact commands. Run every step:
 1. Download the video with yt-dlp
 2. Extract audio with ffmpeg
 3. Transcribe audio → MIDI with piano_transcription_inference

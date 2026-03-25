@@ -103,7 +103,7 @@ def run_test():
         if not os.path.exists(SETTINGS_JSON):
             print(f"No video output found at {VIDEO_OUTPUT}")
             print("No settings.json found either. Run the pipeline first:")
-            print("  cd ~/repos/PianoVideoScribe && python pianovideoscribe.py "
+            print("  cd ~/repos/piano-video-scribe && python pianovideoscribe.py "
                   "tests/test4/video.mp4 tests/test4/output_video.mid "
                   "--bpm 80 --frame 80 --key D --green-hand left "
                   "--right-hand monophonic --left-hand no-overlap")
