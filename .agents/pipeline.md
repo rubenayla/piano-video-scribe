@@ -159,8 +159,25 @@ The note extraction uses **absolute saturation** detection with split y-zones:
 Use `--config path/to/config.json` for custom color thresholds and sampling zones.
 
 Available configs:
-- `configs/default.json` — Standard Synthesia colors (blue H=100–120)
+- `configs/default.json` — Standard Synthesia colors (green right, blue left)
 - `configs/synthesia_cyan_blue.json` — Synthesia videos using cyan left hand (H≈93, range 85–125)
+- `configs/purple_cyan.json` — Purple right hand (H≈128), cyan left hand (H≈90)
+
+### Direct right/left color keys
+
+Config files can use `"right"` and `"left"` color keys instead of `"green"` and `"blue"`.
+This maps colors directly to hands without needing `--green-hand`. Example:
+
+```json
+{
+  "colors": {
+    "right": { "h_min": 115, "h_max": 145, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 80, "h_max": 100, "s_min": 80, "v_min": 80 }
+  }
+}
+```
+
+Run `detect_colors.py` to auto-detect colors and get a suggested config.
 
 ---
 

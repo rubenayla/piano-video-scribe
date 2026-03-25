@@ -105,13 +105,16 @@ def detect_colors(video_path, frame_neutral=None, frame_playing=None):
             return
         print(f"First playing frame: {frame_playing} ({frame_playing/fps:.1f}s)")
 
-    # Scan several playing frames to collect more color samples
-    sample_frames = []
-    for offset in range(0, 300, 15):
-        f = frame_playing + offset
-        if f >= total_frames:
-            break
-        sample_frames.append(f)
+    # Scan playing frames spread across the entire video to catch both hands
+    # (some videos start with only one hand for the first section)
+    music_duration = total_frames - frame_playing
+    if music_duration > 0:
+        # Sample ~40 frames evenly across the whole playing range
+        n_samples = min(40, music_duration // 5)
+        step = max(1, music_duration // n_samples) if n_samples > 0 else 1
+        sample_frames = list(range(frame_playing, total_frames, step))[:40]
+    else:
+        sample_frames = [frame_playing]
 
     # --- Step 3: Collect hue values of pixels that changed from neutral to saturated ---
     changed_hues = []
@@ -193,9 +196,13 @@ def detect_colors(video_path, frame_neutral=None, frame_playing=None):
 
     if len(peaks) >= 2:
         h1, h2 = peaks[0][0], peaks[1][0]
-        print(f"\nSuggested config:")
-        print(f"  Color 1 (H={h1}, {_name(h1, color_names)}): h_min={max(0,h1-15)}, h_max={min(179,h1+15)}")
-        print(f"  Color 2 (H={h2}, {_name(h2, color_names)}): h_min={max(0,h2-15)}, h_max={min(179,h2+15)}")
+        n1, n2 = _name(h1, color_names), _name(h2, color_names)
+        print(f"\nSuggested config (assign right/left based on the video):")
+        print(f'  "colors": {{')
+        print(f'    "right": {{ "h_min": {max(0,h1-15)}, "h_max": {min(179,h1+15)}, "s_min": 80, "v_min": 80 }},  // {n1} H={h1}')
+        print(f'    "left":  {{ "h_min": {max(0,h2-15)}, "h_max": {min(179,h2+15)}, "s_min": 80, "v_min": 80 }}   // {n2} H={h2}')
+        print(f'  }}')
+        print(f"\n  Swap right/left if the assignment is wrong for your video.")
     elif len(peaks) == 1:
         print(f"\nOnly ONE color detected — this video may use a single color for both hands.")
         print(f"Hand separation will rely on pitch-based fallback.")

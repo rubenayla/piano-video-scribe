@@ -1,0 +1,8 @@
+{
+  "bpm": 80,
+  "key": "D",
+  "green_hand": "left",
+  "frame": 80,
+  "right_hand": "monophonic",
+  "left_hand": "no-overlap"
+}

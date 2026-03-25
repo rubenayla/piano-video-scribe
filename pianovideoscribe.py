@@ -48,33 +48,64 @@ def detect_keyboard(cap, frame_idx=5):
     print(f"Frame size: {w}x{h}")
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    # Auto-find y for white keys: scan bottom-up for row with many white, few dark pixels
-    y_white = h - 30
+    # Auto-find y for white keys: try multiple candidate rows and pick the one
+    # with the most regular spacing (lowest coefficient of variation).
+    # Some rows have artifacts (text labels like C2/C3/C4, key edges) that
+    # create spurious detections, so we scan a range and pick the best.
+
+    def _scan_white_row(hsv_img, y_scan):
+        """Detect white key x-centers at a given y row."""
+        row = hsv_img[y_scan, :]
+        keys = []
+        in_k = False
+        sx = 0
+        for x in range(hsv_img.shape[1]):
+            is_w = int(row[x, 1]) < 60 and int(row[x, 2]) > 180
+            if is_w and not in_k:
+                in_k = True
+                sx = x
+            elif not is_w and in_k:
+                if x - sx > 8:
+                    keys.append((sx + x) // 2)
+                in_k = False
+        if in_k and hsv_img.shape[1] - sx > 8:
+            keys.append((sx + hsv_img.shape[1]) // 2)
+        return keys
+
+    # First find the white key zone (bottom-up scan for white-dominant row)
+    y_white_zone = h - 30
     for y_scan in range(h - 5, h // 2, -1):
         row_test = hsv[y_scan, :]
         white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
         dark_count = int(np.sum(row_test[:, 2] < 80))
         if white_count > 600 and dark_count < 100:
-            y_white = y_scan
+            y_white_zone = y_scan
             break
-    print(f"White key scan y={y_white}")
 
-    # Detect white key x-centers from that row
-    row_white = hsv[y_white, :]
-    raw_white = []
-    in_key = False
-    start_x = 0
-    for x in range(w):
-        is_white = int(row_white[x, 1]) < 60 and int(row_white[x, 2]) > 180
-        if is_white and not in_key:
-            in_key = True
-            start_x = x
-        elif not is_white and in_key:
-            if x - start_x > 8:
-                raw_white.append((start_x + x) // 2)
-            in_key = False
-    if in_key and w - start_x > 8:
-        raw_white.append((start_x + w) // 2)
+    # Try multiple y-values around the detected zone, pick the most regular
+    best_y = y_white_zone
+    best_cv = float('inf')
+    best_raw = _scan_white_row(hsv, y_white_zone)
+    search_lo = max(y_white_zone - 80, h // 2)
+    search_hi = min(y_white_zone + 5, h - 1)
+    for y_try in range(search_lo, search_hi + 1):
+        row_test = hsv[y_try, :]
+        white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
+        if white_count < 400:
+            continue
+        raw = _scan_white_row(hsv, y_try)
+        if len(raw) < 15:
+            continue
+        diffs = np.diff(raw)
+        cv = float(np.std(diffs) / np.mean(diffs)) if np.mean(diffs) > 0 else 999
+        if cv < best_cv:
+            best_cv = cv
+            best_y = y_try
+            best_raw = raw
+
+    y_white = best_y
+    raw_white = best_raw
+    print(f"White key scan y={y_white} (regularity={best_cv:.3f})")
 
     # Regularize: apply linear regression to remove outliers (some keys may be
     # mis-detected when notes are partially visible on them)
@@ -116,6 +147,77 @@ def detect_keyboard(cap, frame_idx=5):
             in_key = False
 
     print(f"Detected {len(black_keys)} black keys")
+
+    # Validate white keys against black keys.  If the black keys form valid
+    # [2,3] octave groups, reconstruct white keys via least-squares fit —
+    # this is far more reliable than scanning white pixel rows, which often
+    # pick up text labels (C2, C3…) or edge artifacts.
+    if len(black_keys) >= 5:
+        bk_gaps = [black_keys[i + 1] - black_keys[i]
+                   for i in range(len(black_keys) - 1)]
+        gap_thresh = (min(bk_gaps) + max(bk_gaps)) / 2
+        bk_groups = [[black_keys[0]]]
+        for i in range(1, len(black_keys)):
+            if black_keys[i] - black_keys[i - 1] > gap_thresh:
+                bk_groups.append([])
+            bk_groups[-1].append(black_keys[i])
+        group_sizes = [len(g) for g in bk_groups]
+
+        # Check if groups follow the piano [2,3] or [3,2] pattern
+        valid_pattern = all(s in (2, 3) for s in group_sizes) and len(group_sizes) >= 2
+        if valid_pattern:
+            # Black key offsets in white-key units from C:
+            #   C#=0.5, D#=1.5, F#=3.5, G#=4.5, A#=5.5
+            bk_offsets_in_octave = {2: [0.5, 1.5], 3: [3.5, 4.5, 5.5]}
+
+            all_offsets = []
+            oct = 0
+            # Determine starting group type
+            first_is_2 = (group_sizes[0] == 2)
+            for gi, g in enumerate(bk_groups):
+                sz = len(g)
+                if first_is_2:
+                    offsets = bk_offsets_in_octave[sz]
+                    if sz == 2:
+                        base = oct * 7
+                    else:
+                        base = oct * 7
+                    for off in offsets:
+                        all_offsets.append(base + off)
+                    if sz == 3:
+                        oct += 1
+                else:
+                    offsets = bk_offsets_in_octave[sz]
+                    base = oct * 7
+                    for off in offsets:
+                        all_offsets.append(base + off)
+                    if sz == 2:
+                        oct += 1
+
+            if len(all_offsets) == len(black_keys):
+                offsets_arr = np.array(all_offsets)
+                bk_arr = np.array(black_keys, dtype=float)
+                A = np.vstack([offsets_arr, np.ones(len(offsets_arr))]).T
+                result = np.linalg.lstsq(A, bk_arr, rcond=None)
+                w_fit, c_fit = result[0]
+                residuals = bk_arr - (w_fit * offsets_arr + c_fit)
+                max_res = float(np.max(np.abs(residuals)))
+
+                if max_res < w_fit * 0.5:  # residuals within half a key width
+                    n_octaves = oct if first_is_2 else oct + 1
+                    # Partial leading keys (before first C)
+                    if not first_is_2:
+                        # Starts with group-of-3 (F#,G#,A#) → 3 white keys before C
+                        n_before = 3  # F, G, A, B before next C
+                    else:
+                        n_before = 0
+                    n_white = n_octaves * 7 + 1 + n_before  # +1 for top C
+                    white_keys = [int(round(c_fit + i * w_fit))
+                                  for i in range(-n_before, n_octaves * 7 + 1)]
+                    print(f"Reconstructed {len(white_keys)} white keys from black keys "
+                          f"(w={w_fit:.1f}px, max_residual={max_res:.1f}px)")
+
+    print(f"Detected {len(black_keys)} black keys")
     return white_keys, black_keys, y_white, y_black
 
 
@@ -152,38 +254,34 @@ def find_first_c(white_keys, black_keys):
         print("Not enough keys, defaulting C to index 2")
         return 2
 
-    # Map each black key to the white key interval (left neighbor index)
-    bk_intervals = []
-    for bx in black_keys:
-        left_idx = None
-        for i, wx in enumerate(white_keys):
-            if wx <= bx:
-                left_idx = i
-            else:
-                break
-        if left_idx is not None:
-            bk_intervals.append(left_idx)
-
-    if not bk_intervals:
+    # Group black keys by their x-pixel gaps.  Within a group (e.g. C#-D# or
+    # F#-G#-A#) gaps are ~1 white-key width apart; between groups the gap is
+    # ~1.5-2× wider.  Using the gap midpoint as threshold is robust regardless
+    # of keyboard scale or letterboxing.
+    bk_gaps = [black_keys[i + 1] - black_keys[i]
+               for i in range(len(black_keys) - 1)]
+    if not bk_gaps:
         return 2
+    gap_thresh = (min(bk_gaps) + max(bk_gaps)) / 2
+    bk_groups = [[black_keys[0]]]
+    for i in range(1, len(black_keys)):
+        if black_keys[i] - black_keys[i - 1] > gap_thresh:
+            bk_groups.append([])
+        bk_groups[-1].append(black_keys[i])
 
-    # Group consecutive intervals
-    groups = []
-    group = [bk_intervals[0]]
-    for prev, curr in zip(bk_intervals, bk_intervals[1:]):
-        if curr - prev == 1:
-            group.append(curr)
-        else:
-            groups.append(group)
-            group = [curr]
-    groups.append(group)
+    print(f"Black key groups (sizes): {[len(g) for g in bk_groups]}")
 
-    print(f"Black key groups (sizes): {[len(g) for g in groups]}")
-
-    # First group of size 2 → C#, D# → C is at group[0][0]
-    for group in groups:
-        if len(group) == 2:
-            c_idx = group[0]
+    # First group of size 2 → C#, D# → C is the white key to their left.
+    for bk_group in bk_groups:
+        if len(bk_group) == 2:
+            # Find the white key index just left of the first black key
+            bx = bk_group[0]
+            c_idx = 0
+            for i, wx in enumerate(white_keys):
+                if wx <= bx:
+                    c_idx = i
+                else:
+                    break
             print(f"First C at white key index {c_idx} (x≈{white_keys[c_idx]})")
             return c_idx
 
@@ -219,7 +317,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
         # Video-only mode (min_midi_note defaults to 21).
         # Partial Synthesia keyboards typically start around C2-C3.
         # Estimate from keyboard size: fewer keys → higher starting octave.
-        if n_white >= 30:
+        if n_white >= 28:
             c_midi = 36   # C2 — typical 4-5 octave keyboard
         elif n_white >= 20:
             c_midi = 48   # C3 — typical 3-4 octave keyboard
@@ -314,9 +412,9 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
     else:
         avg_white_w = 30
 
-    # Keyboard height proxy: white key length ≈ 5× white key width.
-    # All y-zones are percentages of this, making them independent of
-    # resolution AND keyboard zoom level.
+    # Keyboard height proxy for zone sizing: 5× white key width.
+    # This controls detector zone sizes (which need to be proportional
+    # to the visual key size, not the pixel distance between scan lines).
     kb_h = avg_white_w * 5
 
     # Detector zones as % of keyboard height — overridable via config.
@@ -326,7 +424,7 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
         'white_x_ratio': 0.25,
         'white_y_top_pct': 0.12,    # 12% above y_white
         'white_y_bot_pct': -0.02,   # 2% below y_white
-        'black_x_hw': max(2, int(avg_white_w * 0.08)),
+        'black_x_hw': max(2, int(avg_white_w * 0.04)),
         'black_y_top_pct': 0.49,    # 49% above y_white
         'black_y_bot_pct': 0.33,    # 33% above y_white
     }
@@ -337,8 +435,19 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
     for pitch, x_center in note_x_map.items():
         if pitch % 12 in BLACK_SEMITONES:
             hw = det['black_x_hw']
-            y_top = y_white - int(kb_h * det['black_y_top_pct'])
-            y_bot = y_white - int(kb_h * det['black_y_bot_pct'])
+            if y_black is not None:
+                # Anchor black key zones around the actual detected y_black,
+                # not computed from percentages (which fail on letterboxed videos
+                # where y_white-based offsets land in the falling-note area).
+                # IMPORTANT: clip the bottom to stay ABOVE the white key face
+                # zone to prevent white key glow from bleeding into black key
+                # detectors when an adjacent white key is pressed.
+                zone_h = max(10, int(kb_h * (det['black_y_top_pct'] - det['black_y_bot_pct'])))
+                y_top = y_black - zone_h // 2
+                y_bot = y_black + zone_h // 2
+            else:
+                y_top = y_white - int(kb_h * det['black_y_top_pct'])
+                y_bot = y_white - int(kb_h * det['black_y_bot_pct'])
         else:
             hw = int(avg_white_w * det['white_x_ratio'])
             y_top = y_white - int(kb_h * det['white_y_top_pct'])
@@ -423,8 +532,11 @@ def classify_hand(h, s, v, green_is_right=True, colors=None):
     Args:
         h, s, v: HSV values (OpenCV scale: H in [0,179]).
         green_is_right: if True, green = right (0), blue = left (1). Flip if needed.
-        colors: dict with 'green' and 'blue' keys, each containing
-                h_min, h_max, s_min, v_min thresholds. Uses defaults if None.
+            Ignored when colors dict contains 'right'/'left' keys.
+        colors: dict with color keys, each containing h_min, h_max, s_min, v_min.
+            Supports two formats:
+            - Legacy: 'green' and 'blue' keys (uses green_is_right to map to hands)
+            - Direct: 'right' and 'left' keys (maps directly, ignores green_is_right)
 
     Returns:
         0 (right), 1 (left), or None.
@@ -437,6 +549,14 @@ def classify_hand(h, s, v, green_is_right=True, colors=None):
             'green': {'h_min': 40, 'h_max': 65, 's_min': 100, 'v_min': 80},
             'blue':  {'h_min': 100, 'h_max': 120, 's_min': 80, 'v_min': 80},
         }
+
+    # Direct right/left config — no green_is_right logic needed
+    if 'right' in colors and 'left' in colors:
+        for hand_label, hand_id in [('right', 0), ('left', 1)]:
+            c = colors[hand_label]
+            if c['h_min'] <= h <= c['h_max'] and s > c['s_min'] and v > c['v_min']:
+                return hand_id
+        return None
 
     g = colors['green']
     b = colors['blue']
@@ -493,13 +613,28 @@ def _region_avg_hue(hsv_frame, x_left, x_right, y_top, y_bot, s_min=50):
     return float(np.mean(h_ch[mask]))
 
 
-def _classify_hand_from_hue(hue, green_is_right=True):
-    """Classify hand from average hue: green (40-65) = right, blue (85-125) = left."""
+def _classify_hand_from_hue(hue, green_is_right=True, colors=None):
+    """Classify hand from average hue using config color ranges."""
     if hue is None:
         return None
-    if 40 <= hue <= 65:
+    if colors is None:
+        g_min, g_max = 40, 65
+        b_min, b_max = 85, 125
+    elif 'right' in colors and 'left' in colors:
+        # Direct right/left config
+        for hand_label, hand_id in [('right', 0), ('left', 1)]:
+            c = colors[hand_label]
+            if c['h_min'] <= hue <= c['h_max']:
+                return hand_id
+        return None
+    else:
+        g = colors['green']
+        b = colors['blue']
+        g_min, g_max = g['h_min'], g['h_max']
+        b_min, b_max = b['h_min'], b['h_max']
+    if g_min <= hue <= g_max:
         return 0 if green_is_right else 1
-    if 85 <= hue <= 125:
+    if b_min <= hue <= b_max:
         return 1 if green_is_right else 0
     return None
 
@@ -507,7 +642,7 @@ def _classify_hand_from_hue(hue, green_is_right=True):
 def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                              half_w, fps, total_frames, green_is_right, colors,
                              start_frame=0, frame_step=1, white_keys=None, cfg=None,
-                             y_black=None):
+                             y_black=None, start_time=None):
     """Extract notes from the video using frame-to-frame saturation delta.
 
     Instead of checking absolute color, detects the *moment* a key changes
@@ -531,8 +666,10 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
     Returns:
         List of (pitch, hand, onset_sec, offset_sec) tuples.
     """
-    SAT_ON = 70      # saturation threshold: above = key pressed
-    SAT_OFF = 40     # saturation threshold: below = key released
+    SAT_ON = 70       # saturation threshold for white keys: above = key pressed
+    SAT_ON_BLACK = 90 # higher threshold for black keys to reject glow bleed
+    SAT_OFF = 40      # saturation threshold: below = key released
+    BLACK_SEMITONES_SET = {1, 3, 6, 8, 10}
 
     # Build detector regions
     if white_keys is not None:
@@ -554,10 +691,47 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
     # Active notes: pitch → (hand, onset_frame)
     active = {}
     notes = []
+    # Debounce: track consecutive frames above SAT_ON per pitch.
+    # A note-on requires 2+ consecutive frames to filter single-frame
+    # glows from adjacent key presses bleeding into black key zones.
+    pending_on = {}  # pitch → (frame_idx, hand)
 
-    # Seek once to start_frame, then read sequentially (much faster than
-    # seeking every frame — avoids H.264 keyframe backtracking)
+    # Auto-detect the first playing frame: scan forward from start_frame
+    # looking for saturated pixels on the keyboard face (where keys light up
+    # when pressed).  Uses a band 30px above y_white to 5px below — this
+    # catches key presses but avoids falling note bars higher up.
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    play_start = start_frame
+    face_yt = max(0, y_sample_bot - 30)
+    face_yb = min(y_sample_bot + 5, cap.get(cv2.CAP_PROP_FRAME_HEIGHT) - 1)
+    x_lo = min(x for _, x, _, _, _ in pitch_slices) if pitch_slices else 0
+    x_hi = max(x for _, _, x, _, _ in pitch_slices) if pitch_slices else 1920
+    face_yt, face_yb = int(face_yt), int(face_yb)
+    if start_time is not None:
+        # Manual override: skip auto-detection
+        play_start = int(start_time * fps)
+        play_start = max(start_frame, min(play_start, total_frames - 1))
+        print(f"  Using manual start time: frame {play_start} ({play_start/fps:.1f}s)")
+    else:
+        for f_scan in range(start_frame, min(start_frame + int(fps * 30), total_frames), 5):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f_scan)
+            ret, frame = cap.read()
+            if not ret:
+                break
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            region = hsv[face_yt:face_yb, x_lo:x_hi, 1]
+            n_saturated = int(np.sum(region > SAT_ON))
+            if n_saturated > 200:  # enough saturated pixels = key actually pressed
+                play_start = f_scan
+                break
+        if play_start > start_frame:
+            print(f"  Skipping intro: first notes at frame {play_start} "
+                  f"({play_start/fps:.1f}s)")
+
+    # Seek once to play_start, then read sequentially (much faster than
+    # seeking every frame — avoids H.264 keyframe backtracking)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, play_start)
+    start_frame = play_start
     import time as _time
     t0 = _time.time()
 
@@ -574,22 +748,39 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         sat_channel = hsv[:, :, 1]  # extract saturation once
 
+        confirmed_this_frame = []  # track new onsets to detect bar artifacts
+
         for pitch, x1, x2, y1, y2 in pitch_slices:
             if y1 >= y2 or x1 >= x2:
                 continue
             sat = float(np.mean(sat_channel[y1:y2, x1:x2]))
 
-            if pitch not in active and sat > SAT_ON:
-                # Note on: key is saturated — classify hand from hue
-                region = hsv[y1:y2, x1:x2]
-                h_ch = region[:, :, 0].flatten().astype(float)
-                s_ch = region[:, :, 1].flatten().astype(float)
-                mask = s_ch > 50
-                hue = float(np.mean(h_ch[mask])) if np.sum(mask) >= 3 else None
-                hand = _classify_hand_from_hue(hue, green_is_right)
-                active[pitch] = (hand, f_idx)
+            thresh = SAT_ON_BLACK if (pitch % 12) in BLACK_SEMITONES_SET else SAT_ON
+            if pitch not in active and sat > thresh:
+                # Debounce: require 2 consecutive frames above threshold
+                # to filter single-frame glow bleed from adjacent keys.
+                if pitch in pending_on and f_idx - pending_on[pitch][0] <= frame_step:
+                    # Second consecutive frame — confirm note on
+                    hand = pending_on.pop(pitch)[1]
+                    active[pitch] = (hand, f_idx - frame_step)
+                    confirmed_this_frame.append(pitch)
+                else:
+                    # First frame — classify hand and store as pending
+                    region = hsv[y1:y2, x1:x2]
+                    h_ch = region[:, :, 0].flatten().astype(float)
+                    s_ch = region[:, :, 1].flatten().astype(float)
+                    mask = s_ch > 50
+                    hue = float(np.mean(h_ch[mask])) if np.sum(mask) >= 3 else None
+                    hand = _classify_hand_from_hue(hue, green_is_right, colors)
+                    if hand is None:
+                        hand = 0  # fallback: assume right hand for unclassified
+                    pending_on[pitch] = (f_idx, hand)
 
-            elif pitch in active and sat < SAT_OFF:
+            elif sat <= thresh and pitch in pending_on:
+                # Saturation dropped before second frame — cancel pending
+                del pending_on[pitch]
+
+            if pitch in active and sat < SAT_OFF:
                 # Note off: key no longer saturated
                 hand, onset_frame = active.pop(pitch)
                 onset_sec = onset_frame / fps
@@ -903,18 +1094,20 @@ Examples:
                    help='Path to input MIDI (optional — if omitted, extracts notes '
                         'directly from the video)')
     p.add_argument('output', help='Path to output MIDI')
-    p.add_argument('--bpm', type=int, required=True,
-                   help='Actual BPM of the song (required)')
-    p.add_argument('--frame', type=int, default=5,
+    # All settings-overridable args default to None so --settings can fill them in.
+    # Hardcoded defaults are applied after settings are merged.
+    p.add_argument('--bpm', type=int, default=None,
+                   help='Actual BPM of the song (required unless provided via --settings)')
+    p.add_argument('--frame', type=int, default=None,
                    help='Frame index for keyboard detection (default: 5, should be note-free)')
-    p.add_argument('--green-hand', choices=['right', 'left'], default='right',
+    p.add_argument('--green-hand', choices=['right', 'left'], default=None,
                    help='Which hand is shown in green in the video (default: right)')
     hand_choices = ['normal', 'no-overlap', 'monophonic']
-    p.add_argument('--right-hand', choices=hand_choices, default='no-overlap',
+    p.add_argument('--right-hand', choices=hand_choices, default=None,
                    help='Right hand processing: normal, '
                         'no-overlap (default, cut held notes at next onset, keep chords), '
                         'monophonic (single voice, highest note only)')
-    p.add_argument('--left-hand', choices=hand_choices, default='no-overlap',
+    p.add_argument('--left-hand', choices=hand_choices, default=None,
                    help='Left hand processing: normal, '
                         'no-overlap (default, cut held notes at next onset, keep chords), '
                         'monophonic (single voice, lowest note only)')
@@ -925,9 +1118,44 @@ Examples:
     p.add_argument('--config', type=str, default=None,
                    help='Path to a JSON config file (colors, sampling zone, keyboard frame). '
                         'See configs/ directory for examples.')
+    p.add_argument('--start-time', type=float, default=None,
+                   help='Manual override: music start time in seconds (skips auto-detection)')
+    p.add_argument('--end-time', type=float, default=None,
+                   help='Manual override: music end time in seconds (skips auto-detection)')
+    p.add_argument('--settings', type=str, default=None,
+                   help='Path to a settings.json file with saved pipeline parameters. '
+                        'CLI flags override values from the file.')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
-    return p.parse_args()
+
+    args = p.parse_args()
+
+    # --- Merge settings file (if provided) — fill None values from JSON ---
+    if args.settings:
+        with open(args.settings) as f:
+            settings = json.load(f)
+        SETTINGS_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
+                         'left_hand', 'start_time', 'end_time', 'config']
+        for key in SETTINGS_KEYS:
+            if getattr(args, key) is None and key in settings:
+                setattr(args, key, settings[key])
+
+    # --- Apply hardcoded defaults for anything still None ---
+    HARDCODED_DEFAULTS = {
+        'frame': 5,
+        'green_hand': 'right',
+        'right_hand': 'no-overlap',
+        'left_hand': 'no-overlap',
+    }
+    for key, default in HARDCODED_DEFAULTS.items():
+        if getattr(args, key) is None:
+            setattr(args, key, default)
+
+    # BPM is required
+    if args.bpm is None:
+        p.error('--bpm is required (either via CLI or --settings)')
+
+    return args
 
 
 def load_config(config_path):
@@ -1059,7 +1287,73 @@ def main():
             cap, note_x_map, y_sample_top, y_sample_bot,
             half_w, fps, total_frames, green_is_right, cfg['colors'],
             start_frame=frame_idx, frame_step=1, white_keys=white_keys, cfg=cfg,
-            y_black=y_black)
+            y_black=y_black, start_time=args.start_time)
+
+        # --- End-of-music detection ---
+        # Scan backward from the last frame to find the last frame with lit keys.
+        # Uses the same saturated-pixel approach as start detection but in reverse.
+        SAT_ON_THRESH = 70  # same as SAT_ON in extract_notes_from_video
+        END_BUFFER_SEC = 2.0  # buffer to avoid cutting sustained notes
+        face_yt = max(0, y_sample_bot - 30)
+        face_yb = min(y_sample_bot + 5, int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) - 1)
+        # Keyboard x-bounds from note_x_map
+        all_x = list(note_x_map.values())
+        x_lo = min(all_x) if all_x else 0
+        x_hi = max(all_x) if all_x else 1920
+
+        if args.end_time is not None:
+            # Manual override
+            music_end_sec = args.end_time
+            print(f"  Using manual end time: {music_end_sec:.1f}s")
+        else:
+            # Auto-detect: scan backward from last frame
+            music_end_frame = total_frames - 1
+            for f_scan in range(total_frames - 1, max(0, total_frames - int(fps * 60)), -5):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, f_scan)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                region = hsv[face_yt:face_yb, x_lo:x_hi, 1]
+                n_saturated = int(np.sum(region > SAT_ON_THRESH))
+                if n_saturated > 200:
+                    music_end_frame = f_scan
+                    break
+            music_end_sec = music_end_frame / fps + END_BUFFER_SEC
+            print(f"  End-of-music detected: frame {music_end_frame} "
+                  f"({music_end_frame/fps:.1f}s, +{END_BUFFER_SEC}s buffer)")
+
+        # Trim notes that start after the detected end time
+        pre_trim_count = len(video_notes)
+        video_notes = [n for n in video_notes if n[2] <= music_end_sec]
+
+        # Trim end-screen popup artifacts: YouTube end screens overlay colored
+        # elements (mini keyboards, subscribe buttons) that trigger a burst of
+        # simultaneous false notes.  If the last timestamp has 4+ notes starting
+        # together, remove them — real music rarely has 4+ simultaneous onsets.
+        if video_notes:
+            last_t = video_notes[-1][2]
+            tail = [n for n in video_notes if abs(n[2] - last_t) < 0.1]
+            if len(tail) >= 4:
+                video_notes = [n for n in video_notes if abs(n[2] - last_t) >= 0.1]
+                print(f"  Trimmed {len(tail)} end-screen popup notes at {last_t:.1f}s")
+
+        trimmed = pre_trim_count - len(video_notes)
+        if trimmed > 0:
+            print(f"  Trimmed {trimmed} total trailing/popup notes")
+
+        # Determine effective start time for logging
+        if args.start_time is not None:
+            music_start_sec = args.start_time
+        elif video_notes:
+            music_start_sec = video_notes[0][2]
+        else:
+            music_start_sec = 0.0
+
+        duration = music_end_sec - music_start_sec
+        print(f"\nMusic range: {music_start_sec:.1f}s \u2013 {music_end_sec:.1f}s "
+              f"({duration:.1f}s duration)")
+
         cap.release()
 
         right_count = sum(1 for _, h, _, _ in video_notes if h == 0)
@@ -1249,6 +1543,20 @@ def main():
     print(f"Total:      {rn + ln} notes")
     print(f"\nDone! Open {args.output} in MuseScore.")
     print("Tip: Preferences → Import → MIDI → Shortest note: 16th")
+
+    # --- Auto-save settings.json next to the output MIDI ---
+    settings_to_save = {}
+    SAVE_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
+                 'left_hand', 'start_time', 'end_time', 'config']
+    for key in SAVE_KEYS:
+        val = getattr(args, key, None)
+        if val is not None:
+            settings_to_save[key] = val
+    settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')
+    with open(settings_path, 'w') as f:
+        json.dump(settings_to_save, f, indent=2)
+        f.write('\n')
+    print(f"Settings saved: {settings_path}")
 
 
 if __name__ == '__main__':
