@@ -28,19 +28,18 @@ from mido import MidiFile, MidiTrack, Message, MetaMessage
 def _frame_has_keyboard(frame):
     """Check if this frame shows a piano keyboard by scanning for regularly-spaced white keys.
 
-    Runs a lightweight version of the white key scan: finds a row with many white pixels
-    AND dark gaps (black keys), then checks the white segments form a regular pattern
-    (at least 15 keys with consistent spacing).
+    Looks for a horizontal row in the bottom half with 15+ white segments
+    at consistent spacing (CV < 0.15). No dark pixel requirement — the
+    regularity check alone rejects non-keyboard frames (blank screens,
+    title cards, etc.) since they don't produce 15+ evenly-spaced segments.
     """
     h, w = frame.shape[:2]
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     for y in range(h - 5, h * 3 // 4, -5):
         row = hsv[y, :]
         white = int(np.sum((row[:, 1] < 60) & (row[:, 2] > 180)))
-        dark = int(np.sum(row[:, 2] < 80))
-        if white < 600 or dark < 50:
+        if white < 400:
             continue
-        # Count white key segments at this row
         keys = []
         in_k = False
         sx = 0
@@ -56,7 +55,7 @@ def _frame_has_keyboard(frame):
         if len(keys) >= 15:
             diffs = np.diff(keys)
             cv = float(np.std(diffs) / np.mean(diffs)) if np.mean(diffs) > 0 else 999
-            if cv < 0.15:  # reasonably regular spacing
+            if cv < 0.15:
                 return True
     return False
 
