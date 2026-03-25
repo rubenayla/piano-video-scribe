@@ -37,7 +37,7 @@ def run_pipeline(video_path, output_path, bpm, frame):
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    white_keys, black_keys, y_white = detect_keyboard(cap, frame_idx=frame)
+    white_keys, black_keys, y_white, y_black = detect_keyboard(cap, frame_idx=frame)
     note_x_map = build_note_x_map(white_keys, black_keys, 21)
 
     y_top = y_white - cfg['sampling']['y_offset_top']

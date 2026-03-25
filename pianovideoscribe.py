@@ -772,16 +772,29 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                     mask = s_ch > 50
                     hue = float(np.mean(h_ch[mask])) if np.sum(mask) >= 3 else None
                     hand = _classify_hand_from_hue(hue, green_is_right, colors)
-                    if hand is None:
-                        hand = 0  # fallback: assume right hand for unclassified
-                    pending_on[pitch] = (f_idx, hand)
+                    if hand is not None:
+                        pending_on[pitch] = (f_idx, hand)
+                    # If hue doesn't match any configured color, skip —
+                    # it's likely a UI element, border glow, or artifact.
 
             elif sat <= thresh and pitch in pending_on:
                 # Saturation dropped before second frame — cancel pending
                 del pending_on[pitch]
 
+            note_off = False
             if pitch in active and sat < SAT_OFF:
-                # Note off: key no longer saturated
+                note_off = True
+            elif pitch in active and sat > thresh:
+                # Saturation is high — check if the hue still matches a
+                # configured hand color.  If not, a non-musical overlay
+                # (e.g. phone nav bar) has replaced the note bar.
+                region_h = hsv[y1:y2, x1:x2, 0]
+                region_s = hsv[y1:y2, x1:x2, 1]
+                s_mask = region_s > 50
+                hue = float(np.mean(region_h[s_mask])) if np.sum(s_mask) >= 3 else None
+                if _classify_hand_from_hue(hue, green_is_right, colors) is None:
+                    note_off = True
+            if note_off and pitch in active:
                 hand, onset_frame = active.pop(pitch)
                 onset_sec = onset_frame / fps
                 offset_sec = f_idx / fps
@@ -838,14 +851,18 @@ def quantize_tick_smart(tick, eighth, sixteenth):
     return round(tick / sixteenth) * sixteenth
 
 
-def quantize_onsets_pll(onset_secs, bpm, alpha=0.1):
-    """Phase-locked loop quantizer: snap onsets to 16th-note grid positions.
+def quantize_onsets_pll(onset_secs, bpm, alpha=0.1, subdivisions=4):
+    """Phase-locked loop quantizer: snap onsets to grid positions.
 
     Maintains a running phase offset (EMA) that self-corrects for BPM drift
-    and per-note jitter.  Resets phase after large gaps (>= 3 sixteenths) to
+    and per-note jitter.  Resets phase after large gaps (>= 3 grid units) to
     avoid carrying accumulated error from dense passages into sparse ones.
+
+    Args:
+        subdivisions: grid units per beat. 4 = 16th notes (default),
+            3 = triplet 8th notes, 6 = triplet 16th notes.
     """
-    s = 60.0 / bpm / 4  # sixteenth duration
+    s = 60.0 / bpm / subdivisions  # grid unit duration
     phase = 0.0
     initialized = False
     results = []
@@ -871,6 +888,21 @@ def quantize_onsets_pll(onset_secs, bpm, alpha=0.1):
             phase += alpha * error
 
         results.append(idx)
+
+    # For combined grids (subdivisions=12), snap each index to the nearest
+    # valid musical position. Valid positions per beat (in 12ths):
+    # straight: 0,3,6,9  triplet: 0,4,8  → combined: 0,3,4,6,8,9
+    # This eliminates quintuplets (5) and septuplets (7) from the output.
+    if subdivisions == 12:
+        valid_per_beat = [0, 3, 4, 6, 8, 9]
+        snapped = []
+        for idx in results:
+            beat = idx // 12
+            pos = idx % 12
+            # Find nearest valid position (may cross beat boundary)
+            best = min(valid_per_beat, key=lambda v: abs(v - pos))
+            snapped.append(beat * 12 + best)
+        results = snapped
 
     return results
 
@@ -1125,6 +1157,9 @@ Examples:
     p.add_argument('--settings', type=str, default=None,
                    help='Path to a settings.json file with saved pipeline parameters. '
                         'CLI flags override values from the file.')
+    p.add_argument('--triplet', action='store_true',
+                   help='Use combined grid (12 per beat) that supports both straight and '
+                        'triplet rhythms. Use when the song has tresillos.')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
 
@@ -1209,6 +1244,11 @@ def main():
     EIGHTH = OUT_TPB // 2     # ticks per 8th note
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
     THIRTYSECOND = OUT_TPB // 8  # ticks per 32nd note
+    # Grid subdivisions per beat: 4 = 16th notes (default),
+    # 12 = combined (supports both straight 16ths and triplets exactly:
+    #   16th=3 units, triplet-8th=4 units, triplet-quarter=8 units)
+    GRID_SUBDIVISIONS = 12 if args.triplet else 4
+    GRID_TICKS = OUT_TPB // GRID_SUBDIVISIONS  # ticks per grid unit (80 or 240)
     green_is_right = (args.green_hand == 'right')
 
     # Config overrides for --frame (CLI takes precedence)
@@ -1219,6 +1259,8 @@ def main():
     print(f"Source:      {'video (direct extraction)' if args.midi is None else args.midi}")
     print(f"Output MIDI: {args.output}")
     print(f"BPM:         {OUT_BPM}")
+    if args.triplet:
+        print(f"Grid:        triplet (3 per beat, {GRID_TICKS} ticks)")
     print(f"Green hand:  {args.green_hand}")
     if args.config:
         print(f"Config:      {args.config}")
@@ -1371,21 +1413,22 @@ def main():
         # Quantize all notes together with a single PLL so both hands
         # share the same grid and stay coordinated.
         first_onset = video_notes[0][2]
-        sixteenth_ticks = OUT_TPB // 4
 
         all_onsets = [on for _, _, on, _ in video_notes]
         all_offsets = [off for _, _, _, off in video_notes]
         on_grid = quantize_onsets_pll(
-            [t - first_onset for t in all_onsets], OUT_BPM, alpha=0.1)
+            [t - first_onset for t in all_onsets], OUT_BPM, alpha=0.1,
+            subdivisions=GRID_SUBDIVISIONS)
         off_grid = quantize_onsets_pll(
-            [t - first_onset for t in all_offsets], OUT_BPM, alpha=0.1)
+            [t - first_onset for t in all_offsets], OUT_BPM, alpha=0.1,
+            subdivisions=GRID_SUBDIVISIONS)
 
         right_events = []
         left_events = []
 
         for i, (pitch, hand, onset_sec, offset_sec) in enumerate(video_notes):
-            on_tick = on_grid[i] * sixteenth_ticks
-            off_tick = off_grid[i] * sixteenth_ticks
+            on_tick = on_grid[i] * GRID_TICKS
+            off_tick = off_grid[i] * GRID_TICKS
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
             evts = right_events if hand == 0 else left_events

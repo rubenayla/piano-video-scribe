@@ -1,8 +1,16 @@
 # TODO
-
+- [ ] I want to use Karpathy's autoresearch algorithm to improve this software, but for that i need a clear metric of improvement. I dont know if i can trust you to manually check sheets or we can do other checks, like using videos with known melodies and count number of notes... maybe download more videos for those known melodies, or you can think of other better ways to check that the software is good. I'd like to try lots of different detections methods, resistant to glow sparkly stuff etc. And as generic as possible, so it works for many keyboards with just a few adjustments. As elegant as possible.
 - [ ] Auto-detect BPM from audio using `librosa.beat.beat_track()` instead of asking the user.
       Could also detect time signature (4/4, 3/4, etc.).
       Reference: https://librosa.org/doc/latest/generated/librosa.beat.beat_track.html
+- [ ] Robustness against screen-recorded videos. Screen recordings from phones/tablets
+      include navigation bars, status bars, and other UI overlays that sit on or near the
+      keyboard region. Current fix: reject saturated pixels whose hue doesn't match any
+      configured hand color. Further improvements:
+      - Auto-detect the keyboard bounding box and clip detector regions to it (ignore
+        pixels outside the actual keyboard area).
+      - Detect persistent saturation (>5s at same position) as non-musical artifacts.
+      - Use the clean reference frame to build a mask of "non-keyboard" regions.
 - [ ] Auto-calibrate saturation thresholds per video. Use delta detection on a few clear
       onsets to measure the actual saturation values when keys are pressed/released, then
       set SAT_ON/SAT_OFF thresholds automatically instead of using fixed values (70/40).
