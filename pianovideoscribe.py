@@ -359,6 +359,38 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
             break
         note_x_map[midi] = white_keys[i]
 
+    # Extrapolate one white key beyond each edge using average spacing.
+    # Synthesia videos often have partially-visible keys at the edges that
+    # the keyboard detector misses, but note bars still appear on them.
+    if len(white_keys) >= 2:
+        avg_w = np.mean(np.diff(white_keys))
+        # Left edge: add one key below the lowest mapped white key
+        lowest_midi = min(m for m in note_x_map if m % 12 in [0, 2, 4, 5, 7, 9, 11])
+        lowest_x = note_x_map[lowest_midi]
+        left_x = int(lowest_x - avg_w)
+        if left_x > 0 and lowest_midi - 1 >= 21:
+            semi = lowest_midi % 12
+            idx = WHITE_SEMITONES.index(semi) if semi in WHITE_SEMITONES else -1
+            if idx > 0:
+                prev_midi = lowest_midi - (WHITE_SEMITONES[idx] - WHITE_SEMITONES[idx - 1])
+            else:
+                prev_midi = lowest_midi - 1  # C → B
+            if prev_midi >= 21:
+                note_x_map[prev_midi] = left_x
+        # Right edge: add one key above the highest mapped white key
+        highest_midi = max(m for m in note_x_map if m % 12 in [0, 2, 4, 5, 7, 9, 11])
+        highest_x = note_x_map[highest_midi]
+        right_x = int(highest_x + avg_w)
+        if right_x < 1920 and highest_midi + 1 <= 108:
+            semi = highest_midi % 12
+            idx = WHITE_SEMITONES.index(semi) if semi in WHITE_SEMITONES else -1
+            if idx < len(WHITE_SEMITONES) - 1:
+                next_midi = highest_midi + (WHITE_SEMITONES[idx + 1] - WHITE_SEMITONES[idx])
+            else:
+                next_midi = highest_midi + 1  # B → C
+            if next_midi <= 108:
+                note_x_map[next_midi] = right_x
+
     # Assign black keys using actual detected positions where available,
     # falling back to midpoint of flanking white keys.
     for wm in list(note_x_map.keys()):
@@ -747,13 +779,24 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         sat_channel = hsv[:, :, 1]  # extract saturation once
+        val_channel = hsv[:, :, 2]  # brightness — needed to gate dark pixels
 
         confirmed_this_frame = []  # track new onsets to detect bar artifacts
 
         for pitch, x1, x2, y1, y2 in pitch_slices:
             if y1 >= y2 or x1 >= x2:
                 continue
-            sat = float(np.mean(sat_channel[y1:y2, x1:x2]))
+            # Gate saturation by brightness: near-black pixels (V < 30)
+            # produce noisy saturation from video compression artifacts.
+            # Treat them as S=0 to prevent false note-on triggers.
+            V_MIN = 30
+            region_s = sat_channel[y1:y2, x1:x2]
+            region_v = val_channel[y1:y2, x1:x2]
+            bright_mask = region_v >= V_MIN
+            if np.any(bright_mask):
+                sat = float(np.mean(region_s[bright_mask]))
+            else:
+                sat = 0.0
 
             thresh = SAT_ON_BLACK if (pitch % 12) in BLACK_SEMITONES_SET else SAT_ON
             if pitch not in active and sat > thresh:
@@ -1129,7 +1172,7 @@ Examples:
     # All settings-overridable args default to None so --settings can fill them in.
     # Hardcoded defaults are applied after settings are merged.
     p.add_argument('--bpm', type=int, default=None,
-                   help='Actual BPM of the song (required unless provided via --settings)')
+                   help='BPM of the song. Auto-detected from video audio if omitted.')
     p.add_argument('--frame', type=int, default=None,
                    help='Frame index for keyboard detection (default: 5, should be note-free)')
     p.add_argument('--green-hand', choices=['right', 'left'], default=None,
@@ -1158,8 +1201,8 @@ Examples:
                    help='Path to a settings.json file with saved pipeline parameters. '
                         'CLI flags override values from the file.')
     p.add_argument('--triplet', action='store_true',
-                   help='Use combined grid (12 per beat) that supports both straight and '
-                        'triplet rhythms. Use when the song has tresillos.')
+                   help='Use combined grid (12 per beat) that supports both straight 16ths '
+                        'and triplet positions. Each note snaps to the nearest valid position.')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
 
@@ -1186,11 +1229,75 @@ Examples:
         if getattr(args, key) is None:
             setattr(args, key, default)
 
-    # BPM is required
+    # BPM: auto-detect from video audio if not provided
     if args.bpm is None:
-        p.error('--bpm is required (either via CLI or --settings)')
+        detected = detect_bpm_from_video(args.video)
+        if detected is None:
+            p.error('--bpm is required (auto-detection failed)')
+        args.bpm = detected
 
     return args
+
+
+def detect_bpm_from_video(video_path):
+    """Extract audio from video and detect BPM using librosa.
+
+    Returns the detected BPM as an integer, or None on failure.
+    """
+    import subprocess
+    import tempfile
+
+    # Extract audio to a temporary WAV file
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
+             '-ar', '44100', '-ac', '1', tmp_path, '-y'],
+            capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            print("WARNING: Could not extract audio from video for BPM detection.",
+                  file=sys.stderr)
+            return None
+
+        import librosa
+        audio, sr = librosa.load(tmp_path, sr=None, mono=True)
+
+        # Use beat_track for primary estimate
+        tempo, _ = librosa.beat.beat_track(y=audio, sr=sr)
+        # tempo may be an array in some librosa versions
+        primary_bpm = float(tempo) if not hasattr(tempo, '__len__') else float(tempo[0])
+
+        # Also get tempogram candidates for context
+        oenv = librosa.onset.onset_strength(y=audio, sr=sr)
+        tg = librosa.feature.tempogram(onset_envelope=oenv, sr=sr)
+        ac = np.mean(tg, axis=1)
+        bpms = librosa.tempo_frequencies(tg.shape[0], sr=sr)
+        mask = (bpms >= 40) & (bpms <= 200)
+        top_idx = np.argsort(ac[mask])[::-1][:3]
+        candidates = [(bpms[mask][i], ac[mask][i]) for i in top_idx]
+
+        print(f"Auto-detected BPM: {primary_bpm:.0f}")
+        print(f"  Candidates: {', '.join(f'{b:.0f}' for b, _ in candidates)}")
+
+        # Librosa often picks double-time; prefer half if it's in 80-140 range
+        bpm = round(primary_bpm)
+        if bpm > 140:
+            half = bpm / 2
+            if 60 <= half <= 140:
+                print(f"  Halving {bpm} -> {half:.0f} (likely double-time)")
+                bpm = round(half)
+
+        print(f"  Using: {bpm} BPM")
+        return bpm
+
+    except Exception as e:
+        print(f"WARNING: BPM auto-detection failed: {e}", file=sys.stderr)
+        return None
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 def load_config(config_path):
@@ -1245,8 +1352,9 @@ def main():
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
     THIRTYSECOND = OUT_TPB // 8  # ticks per 32nd note
     # Grid subdivisions per beat: 4 = 16th notes (default),
-    # 12 = combined (supports both straight 16ths and triplets exactly:
-    #   16th=3 units, triplet-8th=4 units, triplet-quarter=8 units)
+    # 12 = combined grid (supports both straight and triplet positions:
+    #   valid positions per beat in 12ths: 0,3,4,6,8,9
+    #   each hand's PLL naturally phase-locks to its own grid type)
     GRID_SUBDIVISIONS = 12 if args.triplet else 4
     GRID_TICKS = OUT_TPB // GRID_SUBDIVISIONS  # ticks per grid unit (80 or 240)
     green_is_right = (args.green_hand == 'right')
@@ -1411,30 +1519,51 @@ def main():
         # PLL self-corrects for BPM drift and per-note jitter (97% accuracy).
         print("\n--- Step 4: Build quantized 2-track MIDI ---")
 
-        # Quantize all notes together with a single PLL so both hands
-        # share the same grid and stay coordinated.
+        # Quantize each hand separately: when --triplet is set, left hand
+        # uses triplet grid (sub=6) while right hand stays straight (sub=4).
+        # This avoids swing artifacts on a straight melody.
         first_onset = video_notes[0][2]
 
-        all_onsets = [on for _, _, on, _ in video_notes]
-        all_offsets = [off for _, _, _, off in video_notes]
-        on_grid = quantize_onsets_pll(
-            [t - first_onset for t in all_onsets], OUT_BPM, alpha=0.1,
-            subdivisions=GRID_SUBDIVISIONS)
-        off_grid = quantize_onsets_pll(
-            [t - first_onset for t in all_offsets], OUT_BPM, alpha=0.1,
-            subdivisions=GRID_SUBDIVISIONS)
+        RIGHT_SUB = GRID_SUBDIVISIONS  # combined (12) or straight (4)
+        LEFT_SUB = GRID_SUBDIVISIONS  # combined (12) or straight (4)
+        RIGHT_GRID_TICKS = OUT_TPB // RIGHT_SUB
+        LEFT_GRID_TICKS = OUT_TPB // LEFT_SUB
+
+        # Split notes by hand, keeping original indices
+        right_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 0]
+        left_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 1]
+
+        # Quantize each hand with its own PLL and grid
+        def quantize_hand(indices, subdivisions):
+            onsets = [video_notes[i][2] - first_onset for i in indices]
+            offsets = [video_notes[i][3] - first_onset for i in indices]
+            on_g = quantize_onsets_pll(onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+            off_g = quantize_onsets_pll(offsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+            return on_g, off_g
+
+        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
+        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
 
         right_events = []
         left_events = []
 
-        for i, (pitch, hand, onset_sec, offset_sec) in enumerate(video_notes):
-            on_tick = on_grid[i] * GRID_TICKS
-            off_tick = off_grid[i] * GRID_TICKS
+        for j, i in enumerate(right_indices):
+            pitch = video_notes[i][0]
+            on_tick = r_on_grid[j] * RIGHT_GRID_TICKS
+            off_tick = r_off_grid[j] * RIGHT_GRID_TICKS
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
-            evts = right_events if hand == 0 else left_events
-            evts.append((on_tick, 'note_on', pitch, 80))
-            evts.append((off_tick, 'note_off', pitch, 0))
+            right_events.append((on_tick, 'note_on', pitch, 80))
+            right_events.append((off_tick, 'note_off', pitch, 0))
+
+        for j, i in enumerate(left_indices):
+            pitch = video_notes[i][0]
+            on_tick = l_on_grid[j] * LEFT_GRID_TICKS
+            off_tick = l_off_grid[j] * LEFT_GRID_TICKS
+            on_tick = max(0, on_tick)
+            off_tick = max(on_tick + 1, off_tick)
+            left_events.append((on_tick, 'note_on', pitch, 80))
+            left_events.append((off_tick, 'note_off', pitch, 0))
 
     else:
         # MIDI-BASED MODE: use MIDI notes, video for hand assignment
