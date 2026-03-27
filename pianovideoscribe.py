@@ -114,6 +114,25 @@ def detect_keyboard(cap, frame_idx=None):
     # Some rows have artifacts (text labels like C2/C3/C4, key edges) that
     # create spurious detections, so we scan a range and pick the best.
 
+    # Adaptive brightness thresholds for dark keyboards.
+    # Standard: S<60, V>180. If that finds nothing, lower V threshold
+    # based on actual frame brightness.
+    bottom_half = hsv[h // 2:, :, 2]  # V channel of bottom half
+    max_v = int(bottom_half.max())
+    if max_v > 150:
+        s_thresh, v_thresh = 60, 180
+        min_white_px = 600
+        min_white_scan = 400
+    else:
+        # Dark keyboard — scale thresholds to actual brightness
+        v_thresh = max(3, max_v // 3)
+        s_thresh = 30
+        min_white_px = 20  # very few bright pixels on dim keyboards
+        min_white_scan = 15
+        print(f"Dark keyboard detected (max V={max_v}), using adaptive thresholds: S<{s_thresh}, V>{v_thresh}")
+
+    min_seg_w = 3 if max_v < 150 else 8  # narrower segments on dark keyboards
+
     def _scan_white_row(hsv_img, y_scan):
         """Detect white key x-centers at a given y row."""
         row = hsv_img[y_scan, :]
@@ -121,27 +140,34 @@ def detect_keyboard(cap, frame_idx=None):
         in_k = False
         sx = 0
         for x in range(hsv_img.shape[1]):
-            is_w = int(row[x, 1]) < 60 and int(row[x, 2]) > 180
+            is_w = int(row[x, 1]) < s_thresh and int(row[x, 2]) > v_thresh
             if is_w and not in_k:
                 in_k = True
                 sx = x
             elif not is_w and in_k:
-                if x - sx > 8:
+                if x - sx > min_seg_w:
                     keys.append((sx + x) // 2)
                 in_k = False
-        if in_k and hsv_img.shape[1] - sx > 8:
+        if in_k and hsv_img.shape[1] - sx > min_seg_w:
             keys.append((sx + hsv_img.shape[1]) // 2)
         return keys
 
     # First find the white key zone (bottom-up scan for white-dominant row)
+    # For dark keyboards, skip the dark_count check (everything looks dark).
     y_white_zone = h - 30
     for y_scan in range(h - 5, h // 2, -1):
         row_test = hsv[y_scan, :]
-        white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
-        dark_count = int(np.sum(row_test[:, 2] < 80))
-        if white_count > 600 and dark_count < 100:
-            y_white_zone = y_scan
-            break
+        white_count = int(np.sum((row_test[:, 1] < s_thresh) & (row_test[:, 2] > v_thresh)))
+        if max_v > 150:
+            dark_count = int(np.sum(row_test[:, 2] < 80))
+            if white_count > min_white_px and dark_count < 100:
+                y_white_zone = y_scan
+                break
+        else:
+            # Dark keyboard: just find the row with the most white pixels
+            if white_count > min_white_px:
+                y_white_zone = y_scan
+                break
 
     # Try multiple y-values around the detected zone, pick the most regular
     best_y = y_white_zone
@@ -151,8 +177,8 @@ def detect_keyboard(cap, frame_idx=None):
     search_hi = min(y_white_zone + 5, h - 1)
     for y_try in range(search_lo, search_hi + 1):
         row_test = hsv[y_try, :]
-        white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
-        if white_count < 400:
+        white_count = int(np.sum((row_test[:, 1] < s_thresh) & (row_test[:, 2] > v_thresh)))
+        if white_count < min_white_scan:
             continue
         raw = _scan_white_row(hsv, y_try)
         if len(raw) < 15:
@@ -183,8 +209,8 @@ def detect_keyboard(cap, frame_idx=None):
     for y_scan in range(max_search, min_search, -1):
         row_test = hsv[y_scan, :]
         dark_count = int(np.sum(row_test[:, 2] < 80))
-        white_count = int(np.sum((row_test[:, 1] < 60) & (row_test[:, 2] > 180)))
-        if dark_count > 100 and white_count > 200 and dark_count > best_dark:
+        white_count = int(np.sum((row_test[:, 1] < s_thresh) & (row_test[:, 2] > v_thresh)))
+        if dark_count > 100 and white_count > min_white_scan // 2 and dark_count > best_dark:
             best_dark = dark_count
             y_black = y_scan
     print(f"Black key scan y={y_black}")
