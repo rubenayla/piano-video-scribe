@@ -1525,6 +1525,10 @@ Examples:
                    help='Manual override: music start time in seconds (skips auto-detection)')
     p.add_argument('--end-time', type=float, default=None,
                    help='Manual override: music end time in seconds (skips auto-detection)')
+    p.add_argument('--start-beat', type=float, default=1.0,
+                   help='Beat position of the first note (default: 1.0). '
+                        'Use 1.5 for pickup on the "and" of beat 1, '
+                        '4.5 for pickup on the "and" of beat 4, etc.')
     p.add_argument('--settings', type=str, default=None,
                    help='Path to a settings.json file with saved pipeline parameters. '
                         'CLI flags override values from the file.')
@@ -1558,6 +1562,7 @@ Examples:
             setattr(args, key, default)
 
     # BPM: auto-detect from video audio if not provided
+    args._had_explicit_bpm = args.bpm is not None
     if args.bpm is None:
         detected = detect_bpm_from_video(args.video)
         if detected is None:
@@ -1842,6 +1847,28 @@ def main():
             print("ERROR: No notes detected in video.", file=sys.stderr)
             sys.exit(1)
 
+        # Refine BPM using detected note onsets: test candidates near the
+        # initial estimate and pick the one with least quantization error.
+        if not args._had_explicit_bpm:
+            onsets = sorted(set(n[2] for n in video_notes))
+            if len(onsets) >= 10:
+                intervals = [onsets[i+1] - onsets[i] for i in range(len(onsets)-1)
+                              if 0.05 < onsets[i+1] - onsets[i] < 2.0]
+                if intervals:
+                    # Test BPM candidates: original ± 15%, in steps of 1
+                    best_bpm, best_err = OUT_BPM, float('inf')
+                    for candidate in range(max(40, OUT_BPM - 15), min(220, OUT_BPM + 16)):
+                        s16 = 60.0 / candidate / 4
+                        # Quantization error: how well do intervals snap to 16th-note multiples?
+                        err = sum(abs(iv / s16 - round(iv / s16)) for iv in intervals[:50])
+                        if err < best_err:
+                            best_err = err
+                            best_bpm = candidate
+                    if best_bpm != OUT_BPM:
+                        print(f"  BPM refined: {OUT_BPM} → {best_bpm} "
+                              f"(onset-based, {len(intervals)} intervals)")
+                        OUT_BPM = best_bpm
+
         # Convert to quantized events using phase-locked loop quantizer.
         # PLL self-corrects for BPM drift and per-note jitter (97% accuracy).
         print("\n--- Step 4: Build quantized 2-track MIDI ---")
@@ -1881,13 +1908,19 @@ def main():
         r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
         l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
 
+        # Apply --start-beat offset: shift all grid positions so the first
+        # note lands on the specified beat instead of beat 1.
+        beat_offset = args.start_beat - 1.0  # e.g., 1.5 → 0.5 beats
+        r_tick_offset = int(beat_offset * OUT_TPB)
+        l_tick_offset = int(beat_offset * OUT_TPB)
+
         right_events = []
         left_events = []
 
         for j, i in enumerate(right_indices):
             pitch = video_notes[i][0]
-            on_tick = r_on_grid[j] * RIGHT_GRID_TICKS
-            off_tick = r_off_grid[j] * RIGHT_GRID_TICKS
+            on_tick = r_on_grid[j] * RIGHT_GRID_TICKS + r_tick_offset
+            off_tick = r_off_grid[j] * RIGHT_GRID_TICKS + r_tick_offset
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
             right_events.append((on_tick, 'note_on', pitch, 80))
@@ -1895,8 +1928,8 @@ def main():
 
         for j, i in enumerate(left_indices):
             pitch = video_notes[i][0]
-            on_tick = l_on_grid[j] * LEFT_GRID_TICKS
-            off_tick = l_off_grid[j] * LEFT_GRID_TICKS
+            on_tick = l_on_grid[j] * LEFT_GRID_TICKS + l_tick_offset
+            off_tick = l_off_grid[j] * LEFT_GRID_TICKS + l_tick_offset
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
             left_events.append((on_tick, 'note_on', pitch, 80))
@@ -2059,10 +2092,13 @@ def main():
     # --- Auto-save settings.json next to the output MIDI ---
     settings_to_save = {}
     SAVE_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                 'left_hand', 'start_time', 'end_time', 'config']
+                 'left_hand', 'start_time', 'end_time', 'start_beat', 'config']
     for key in SAVE_KEYS:
         val = getattr(args, key, None)
         if val is not None:
+            # Skip defaults that don't need saving
+            if key == 'start_beat' and val == 1.0:
+                continue
             settings_to_save[key] = val
     settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')
     with open(settings_path, 'w') as f:
