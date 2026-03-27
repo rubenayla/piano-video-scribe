@@ -17,6 +17,25 @@ any room to simplify, make the code more elegant while passing tests good?
         pixels outside the actual keyboard area).
       - Detect persistent saturation (>5s at same position) as non-musical artifacts.
       - Use the clean reference frame to build a mask of "non-keyboard" regions.
+- [ ] **Falling blocks: auto color detection via spatial statistics.**
+      For the region above the keyboard (falling blobs area only):
+      1. Sample random frames scattered across the video
+      2. Apply high-saturation filter (S>80) to remove background
+      3. Find the 2-3 most common remaining hue clusters — these are the blob colors
+      4. Split each frame into left half and right half
+      5. Count each color's pixel frequency in left vs right across all sampled frames
+      6. The color dominant on the right side = right hand, dominant on left = left hand
+      This works because RH notes are higher pitch (right side of keyboard = right side of frame)
+      and LH notes are lower pitch (left side). Pure traditional programming, no ML needed.
+      Could be improved further by Karpathy-style autoresearch — let the AI find even better
+      heuristics for color/hand assignment.
+
+- [ ] **Autoresearch: autonomous improvement loop (Karpathy-style).**
+      Use our high-fidelity synthetic tests (midi2video rendered, 100% correct GT) as the
+      scoring function. The loop: read score.py output → analyze failures → hypothesize fix →
+      implement → re-score → keep if improved, revert if not. Target: 100% on test11/test12
+      using the falling blocks detector. Then expand to real videos.
+
 - [ ] Auto-calibrate saturation thresholds per video. Use delta detection on a few clear
       onsets to measure the actual saturation values when keys are pressed/released, then
       set SAT_ON/SAT_OFF thresholds automatically instead of using fixed values (70/40).

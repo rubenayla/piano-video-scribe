@@ -877,16 +877,19 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
         group_durs = [dur]
 
         # Grow cluster: merge observations of the SAME block seen across
-        # frames. Chain-merge: each observation must be within tolerance
-        # of the PREVIOUS one (not the first), allowing the cluster to
-        # absorb gradual onset drift while stopping at gaps.
+        # frames. Chain-merge with max span: each observation must be
+        # within tolerance of the previous AND the total cluster span
+        # can't exceed the note's duration + a small margin.
+        # This prevents multiple distinct notes from being merged when
+        # several blocks of the same pitch are visible simultaneously.
         j = i + 1
         last_onset = onset
+        max_span = dur + 0.2  # a single block's duration + margin
         while j < len(obs_with_hands):
             p2, h2, on2, dur2 = obs_with_hands[j]
             if p2 != pitch or h2 != hand:
                 break
-            if abs(on2 - last_onset) <= merge_tolerance:
+            if abs(on2 - last_onset) <= merge_tolerance and (on2 - onset) <= max_span:
                 group_onsets.append(on2)
                 group_durs.append(dur2)
                 last_onset = on2
