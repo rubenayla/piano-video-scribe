@@ -1,0 +1,9 @@
+{
+  "bpm": 88,
+  "key": "Em",
+  "green_hand": "right",
+  "frame": 400,
+  "right_hand": "no-overlap",
+  "left_hand": "no-overlap",
+  "config": "tests/test7/config.json"
+}

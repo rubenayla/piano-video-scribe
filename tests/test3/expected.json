@@ -14,14 +14,10 @@
   },
   "ground_truth": "ground_truth.mid",
   "ground_truth_stats": {
-    "right_hand_notes": 331,
-    "left_hand_notes": 482,
+    "right_hand_notes": 328,
+    "left_hand_notes": 483,
     "right_hand_range": "C#4-F#6",
-    "left_hand_range": "E2-B4"
-  },
-  "results": {
-    "right_hand_match": "98%",
-    "left_hand_match": "52%",
-    "timing_avg_ms": 27
+    "left_hand_range": "E2-B4",
+    "note": "GT cleaned: moved C#4@27.24s RH→LH (wrong hand), removed C#5@79.54s and G#4@126.91s (not played)"
   }
 }

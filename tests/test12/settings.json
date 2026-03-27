@@ -1,0 +1,10 @@
+{
+  "bpm": 80,
+  "key": "D",
+  "green_hand": "right",
+  "frame": 1950,
+  "right_hand": "no-overlap",
+  "left_hand": "no-overlap",
+  "start_time": 0.0,
+  "config": "tests/test12/config.json"
+}

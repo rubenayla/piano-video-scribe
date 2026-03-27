@@ -1,0 +1,36 @@
+{
+  "description": "Synthesia video, two-hand, blue right / green left, 4/4 time, partial keyboard",
+  "source_url": "https://youtu.be/vxsfEpnMM3o",
+  "midi_source": "https://tinyurl.com/2oqpxx58",
+  "song": "No Time To Die - Billie Eilish",
+  "bpm": null,
+  "time_signature": [4, 4],
+  "key": "Em",
+  "video": {
+    "resolution": "1280x720",
+    "fps": 30,
+    "duration_s": 239.2,
+    "codec": "h264"
+  },
+  "keyboard": {
+    "white_keys_expected": null,
+    "black_keys_expected": null,
+    "labels_visible": []
+  },
+  "colors": {
+    "right_hand": "blue",
+    "left_hand": "green"
+  },
+  "midi_stats": {
+    "type": 1,
+    "ticks_per_beat": 480,
+    "num_tracks": 2,
+    "track_0_name": "Piano ",
+    "track_0_notes": 431,
+    "track_1_name": "Piano ",
+    "track_1_notes": 362,
+    "total_notes": 793,
+    "duration_s": 226.7
+  },
+  "known_issues": []
+}

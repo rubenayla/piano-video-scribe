@@ -1,0 +1,34 @@
+{
+  "description": "Synthesia video, two-hand, blue right / green left, 4/4 time, partial keyboard, easy piano",
+  "source_url": "https://youtu.be/_er581yDk3Q",
+  "midi_source": "https://tinyurl.com/yabj24bm",
+  "song": "Yesterday - The Beatles (Easy Piano)",
+  "bpm": null,
+  "time_signature": [4, 4],
+  "key": "F",
+  "video": {
+    "resolution": "1280x720",
+    "fps": 30,
+    "duration_s": 115.9,
+    "codec": "h264"
+  },
+  "keyboard": {
+    "white_keys_expected": null,
+    "black_keys_expected": null,
+    "labels_visible": []
+  },
+  "colors": {
+    "right_hand": "blue",
+    "left_hand": "green"
+  },
+  "midi_stats": {
+    "type": 1,
+    "ticks_per_beat": 480,
+    "num_tracks": 2,
+    "track_0_notes": 212,
+    "track_1_notes": 273,
+    "total_notes": 485,
+    "duration_s": 111.4
+  },
+  "known_issues": []
+}

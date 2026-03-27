@@ -1,0 +1,29 @@
+{
+  "description": "Synthesia video, two-hand, green right / blue left, Sweden from Minecraft by Torby Brand",
+  "source_url": "https://youtu.be/7jFJbp8rYDA",
+  "bpm": "unknown",
+  "time_signature": [4, 4],
+  "keyboard": {
+    "frame": 300,
+    "white_keys_expected": 51,
+    "black_keys_expected": 36
+  },
+  "colors": {
+    "right_hand": "green",
+    "left_hand": "blue"
+  },
+  "ground_truth": "ground_truth.mid",
+  "first_notes": {
+    "left_hand": {
+      "comment": "Left hand enters with light blue notes on the left side"
+    },
+    "right_hand": {
+      "comment": "Right hand enters with green notes in the middle-right area"
+    }
+  },
+  "checks": [
+    "Standard Synthesia green/blue color scheme",
+    "Full 88-key keyboard visible (51 white keys)",
+    "Dark background, no note labels on blocks"
+  ]
+}

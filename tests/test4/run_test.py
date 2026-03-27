@@ -8,7 +8,7 @@ This video is a letterboxed Synthesia tutorial with:
 - Black key glow bleed that triggered false A#/G# notes
 
 Pipeline command:
-  python pianovideoscribe.py video.mp4 output_video.mid \\
+  python pianovideoscribe.py video.mp4 output-video.mid \\
     --bpm 80 --frame 80 --key D --green-hand left \\
     --right-hand monophonic --left-hand no-overlap
 """
@@ -21,7 +21,7 @@ import mido
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(os.path.dirname(TEST_DIR))
 GROUND_TRUTH = os.path.join(TEST_DIR, "ground_truth.mid")
-VIDEO_OUTPUT = os.path.join(TEST_DIR, "output_video.mid")
+VIDEO_OUTPUT = os.path.join(TEST_DIR, "output-video.mid")
 SETTINGS_JSON = os.path.join(TEST_DIR, "settings.json")
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -104,7 +104,7 @@ def run_test():
             print(f"No video output found at {VIDEO_OUTPUT}")
             print("No settings.json found either. Run the pipeline first:")
             print("  cd ~/repos/piano-video-scribe && python pianovideoscribe.py "
-                  "tests/test4/video.mp4 tests/test4/output_video.mid "
+                  "tests/test4/video.mp4 tests/test4/output-video.mid "
                   "--bpm 80 --frame 80 --key D --green-hand left "
                   "--right-hand monophonic --left-hand no-overlap")
             return False

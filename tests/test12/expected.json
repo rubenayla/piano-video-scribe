@@ -1,0 +1,35 @@
+{
+  "description": "End of Beginning (Djo) ground truth rendered via midi2video — controlled roundtrip test",
+  "source": "tests/test4/ground_truth.mid rendered through midi2video",
+  "bpm": 80,
+  "time_signature": [4, 4],
+  "key": "D",
+  "keyboard": {
+    "white_keys_expected": 52,
+    "black_keys_expected": 36
+  },
+  "colors": {
+    "right_hand": "green",
+    "left_hand": "blue"
+  },
+  "ground_truth": "ground_truth.mid",
+  "tracks": {
+    "right_hand": {
+      "track_index": 0,
+      "note_count": 289,
+      "description": "Right hand melody from End of Beginning"
+    },
+    "left_hand": {
+      "track_index": 1,
+      "note_count": 112,
+      "description": "Left hand accompaniment from End of Beginning"
+    }
+  },
+  "checks": [
+    "Ground truth is identical to tests/test4/ground_truth.mid",
+    "Video rendered via midi2video with --color-mode track",
+    "Most notes should be in D major (D E F# G A B C#)",
+    "Total ~401 notes across both hands",
+    "Known exact ground truth for roundtrip accuracy testing"
+  ]
+}

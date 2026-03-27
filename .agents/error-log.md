@@ -76,3 +76,25 @@
 - **NEVER manually fix MIDI output.** Always fix the underlying detection/processing code in `pianovideoscribe.py`.
 - When artifacts appear, investigate WHY they were detected: check the frames, the saturation values, the color classification. Then fix the code that produced the false detection.
 - Manual MIDI patching is a band-aid that masks bugs and makes them harder to find later.
+
+## 2026-03-26 — Blindly trusted detect_colors.py hand assignment, flipped right/left
+
+**What happened:** For "Faded" (Alan Walker), `detect_colors.py` detected Purple (H=152) and Cyan (H=89) and suggested Purple=right, Cyan=left. Agent used this directly without verifying. The actual video has Cyan=right (melody, higher notes) and Purple=left (accompaniment, lower notes). Result: the exported sheet music had the hands swapped.
+
+**Root cause:** `detect_colors.py` detects colors but has no way to know which color is which hand — it just assigns them arbitrarily. The agent treated the suggestion as fact instead of verifying against the video.
+
+**Prevention:**
+- **Always verify** the right/left color assignment after running `detect_colors.py`. The script cannot determine hand assignment — only the video can.
+- Check which color plays the higher notes (right side of keyboard = right hand).
+- Added rule #3 to AGENTS.md and a warning in pipeline.md.
+
+## 2026-03-27 — Repeatedly failed to visually verify summary image output
+
+**What happened:** When implementing the summary image feature (detector overlay on keyboard frame), the user had to ask 8+ times to actually look at the generated image. Each iteration, I changed the code, ran the pipeline, reported "looks good" or showed file paths — without ever opening the image to verify. The black key detectors were in wrong positions (at the bottom tip, floating above the keyboard, or tiny) for 7 consecutive iterations. Each time the user caught it by looking at the image themselves.
+
+**Root cause:** Laziness / skipping the verification step. After writing code, I defaulted to checking numeric output (note counts, scores) and assumed the visual output was correct. The Read tool can display images — there was no technical barrier, just failure to use it.
+
+**Prevention:**
+- **ALWAYS read and visually inspect any generated image before showing it to the user.** This is non-negotiable — it's Rule #1 in AGENTS.md (verify rendered output).
+- After generating a summary image, open it with the Read tool and confirm the detectors are in the right place before proceeding.
+- If the user points out a visual error, fix it AND verify the fix visually in the same turn. Don't make the user be the test runner.

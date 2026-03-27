@@ -1,0 +1,6 @@
+{
+  "colors": {
+    "right": { "h_min": 74, "h_max": 104, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 137, "h_max": 167, "s_min": 80, "v_min": 80 }
+  }
+}

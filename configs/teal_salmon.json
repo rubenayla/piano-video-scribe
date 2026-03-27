@@ -1,0 +1,7 @@
+{
+  "name": "Teal right / Salmon left (Remember Me - Coco)",
+  "colors": {
+    "right": { "h_min": 65, "h_max": 95, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 0, "h_max": 24, "s_min": 80, "v_min": 80 }
+  }
+}

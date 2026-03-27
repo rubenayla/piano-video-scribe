@@ -1,4 +1,5 @@
 # TODO
+any room to simplify, make the code more elegant while passing tests good?
 
 - [x] "Keyboard detection failed — only found 1 white key." — Fixed: auto-detect keyboard
       frame by scanning forward for a frame with regularly-spaced white keys + black keys.

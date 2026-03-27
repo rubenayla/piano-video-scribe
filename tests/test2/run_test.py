@@ -10,7 +10,7 @@ import mido
 
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 GROUND_TRUTH = os.path.join(TEST_DIR, "ground_truth.mid")
-VIDEO_OUTPUT = os.path.join(TEST_DIR, "output_video.mid")
+VIDEO_OUTPUT = os.path.join(TEST_DIR, "output-video.mid")
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -78,7 +78,7 @@ def run_test():
     if not os.path.exists(VIDEO_OUTPUT):
         print(f"No video output found at {VIDEO_OUTPUT}")
         print("Run the pipeline first:")
-        print("  python pianovideoscribe.py video.mp4 output_video.mid --bpm 81 --frame 5")
+        print("  python pianovideoscribe.py video.mp4 output-video.mid --bpm 81 --frame 5")
         return False
 
     gt = mido.MidiFile(GROUND_TRUTH)

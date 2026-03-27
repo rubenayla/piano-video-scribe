@@ -1,0 +1,34 @@
+{
+  "description": "Synthetic test: C major scale + chords (RH) with whole-note bass (LH), rendered via midi2video",
+  "source": "programmatically generated with mido",
+  "bpm": 120,
+  "time_signature": [4, 4],
+  "keyboard": {
+    "white_keys_expected": 52,
+    "black_keys_expected": 36
+  },
+  "colors": {
+    "right_hand": "blue",
+    "left_hand": "green"
+  },
+  "ground_truth": "ground_truth.mid",
+  "tracks": {
+    "right_hand": {
+      "track_index": 1,
+      "note_count": 17,
+      "description": "C major scale ascending C4-C5 (8 notes), then 3 chords: C-E-G, F-A-C, G-B-D (9 notes)"
+    },
+    "left_hand": {
+      "track_index": 2,
+      "note_count": 4,
+      "description": "Whole notes: C3, F3, G3, C3"
+    }
+  },
+  "checks": [
+    "All notes are in C major (white keys only)",
+    "Right hand has 8 scale notes followed by 3 three-note chords",
+    "Left hand has 4 whole notes",
+    "Video rendered via midi2video with --color-mode track",
+    "Ground truth is exact (programmatically generated)"
+  ]
+}

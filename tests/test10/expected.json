@@ -1,0 +1,38 @@
+{
+  "description": "Synthesia video, two-hand, green right / blue left, 4/4 time, partial keyboard, jazzy chords",
+  "source_url": "https://youtu.be/_RIA7AUuXQ4",
+  "midi_source": "https://tinyurl.com/ymd2jbcz",
+  "song": "From The Start - Laufey",
+  "bpm": null,
+  "time_signature": [4, 4],
+  "key": "Db",
+  "video": {
+    "resolution": "1280x720",
+    "fps": 30,
+    "duration_s": 184.9,
+    "codec": "h264"
+  },
+  "keyboard": {
+    "white_keys_expected": null,
+    "black_keys_expected": null,
+    "labels_visible": []
+  },
+  "colors": {
+    "right_hand": "green",
+    "left_hand": "blue"
+  },
+  "midi_stats": {
+    "type": 1,
+    "ticks_per_beat": 480,
+    "num_tracks": 2,
+    "track_0_name": "Piano",
+    "track_0_notes": 542,
+    "track_1_name": "Piano",
+    "track_1_notes": 596,
+    "total_notes": 1138,
+    "duration_s": 172.8
+  },
+  "known_issues": [
+    "Jazz harmony with many accidentals — may produce high out-of-key snap counts"
+  ]
+}

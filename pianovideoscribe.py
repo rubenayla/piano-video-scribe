@@ -279,7 +279,32 @@ def detect_keyboard(cap, frame_idx=None):
                           f"(w={w_fit:.1f}px, max_residual={max_res:.1f}px)")
 
     print(f"Detected {len(black_keys)} black keys")
-    return white_keys, black_keys, y_white, y_black
+
+    # Find keyboard geometry by scanning pixel brightness.
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Top of keyboard: scan a white key column upward from y_white.
+    mid_wk = white_keys[len(white_keys) // 2]
+    y_kb_top = 0
+    for y in range(y_white - 5, 0, -1):
+        if int(gray[y, mid_wk]) < 100:
+            y_kb_top = y + 1
+            break
+
+    # Bottom of black keys: scan a black key column downward from y_black
+    # until brightness rises (white key face appears). If it stays dark
+    # all the way to y_white, the black key extends to y_white.
+    y_bk_bottom = y_black
+    if black_keys:
+        mid_bk = black_keys[len(black_keys) // 2]
+        for y in range(y_black, y_white):
+            if int(gray[y, mid_bk]) > 100:
+                y_bk_bottom = y
+                break
+        else:
+            y_bk_bottom = y_white
+
+    return white_keys, black_keys, y_white, y_black, y_kb_top, y_bk_bottom
 
 
 def regularize_positions(positions):
@@ -485,7 +510,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
 # Color sampling & hand classification
 # ---------------------------------------------------------------------------
 
-def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=None):
+def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=None, y_kb_top=None, y_bk_bottom=None):
     """Compute detector bounds for each key: x-range and y-range.
 
     Black keys are sampled in the upper zone (their body), white keys in the
@@ -529,22 +554,34 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
         if pitch % 12 in BLACK_SEMITONES:
             hw = det['black_x_hw']
             if y_black is not None:
-                # Anchor black key zones around the actual detected y_black,
-                # not computed from percentages (which fail on letterboxed videos
-                # where y_white-based offsets land in the falling-note area).
-                # IMPORTANT: clip the bottom to stay ABOVE the white key face
-                # zone to prevent white key glow from bleeding into black key
-                # detectors when an adjacent white key is pressed.
-                zone_h = max(10, int(kb_h * (det['black_y_top_pct'] - det['black_y_bot_pct'])))
-                y_top = y_black - zone_h // 2
-                y_bot = y_black + zone_h // 2
+                # Place detector covering most of the black key face.
+                # y_kb_top = top of keyboard, y_bk_bottom = bottom of black keys.
+                bk_top = y_kb_top if y_kb_top is not None else y_black - int(avg_white_w * 2)
+                bk_bot = y_bk_bottom if y_bk_bottom is not None else y_black + int(avg_white_w * 0.2)
+                bk_h = bk_bot - bk_top
+                margin = max(1, int(bk_h * 0.1))
+                y_top = bk_top + margin
+                y_bot = bk_bot - margin
             else:
                 y_top = y_white - int(kb_h * det['black_y_top_pct'])
                 y_bot = y_white - int(kb_h * det['black_y_bot_pct'])
         else:
             hw = int(avg_white_w * det['white_x_ratio'])
-            y_top = y_white - int(kb_h * det['white_y_top_pct'])
-            y_bot = y_white - int(kb_h * det['white_y_bot_pct'])
+            # White key detector sits on the exposed face below the black keys.
+            if y_bk_bottom is not None and y_bk_bottom < y_white - 5:
+                # There's a visible white key face area
+                face_top = y_bk_bottom
+                face_h = y_white - face_top
+                margin = max(1, int(face_h * 0.1))
+                y_top = face_top + margin
+                y_bot = y_white - margin
+            else:
+                # No separate face area (e.g. midi2video) — use bottom of keyboard
+                y_top = y_white - int(kb_h * det['white_y_top_pct'])
+                y_bot = y_white - int(kb_h * det['white_y_bot_pct'])
+                # Clamp: never go above the bottom of the black keys
+                if y_bk_bottom is not None and y_top < y_bk_bottom:
+                    y_top = y_bk_bottom
             # Shift detector for asymmetric keys: B/E have wider face on
             # the right (no adjacent black key), C/F on the left. The
             # color glow is offset toward the wider side, so centering
@@ -744,7 +781,8 @@ def _classify_hand_from_hue(hue, green_is_right=True, colors=None):
 def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                              half_w, fps, total_frames, green_is_right, colors,
                              start_frame=0, frame_step=1, white_keys=None, cfg=None,
-                             y_black=None, start_time=None):
+                             y_black=None, start_time=None, y_kb_top=None,
+                             y_bk_bottom=None):
     """Extract notes from the video using frame-to-frame saturation delta.
 
     Instead of checking absolute color, detects the *moment* a key changes
@@ -776,7 +814,8 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
     # Build detector regions
     if white_keys is not None:
         det_regions = build_detector_regions(note_x_map, white_keys,
-                                            y_sample_bot, cfg=cfg, y_black=y_black)
+                                            y_sample_bot, cfg=cfg, y_black=y_black,
+                                            y_kb_top=y_kb_top, y_bk_bottom=y_bk_bottom)
     else:
         det_regions = {p: (x - half_w, x + half_w, y_sample_top, y_sample_bot)
                        for p, x in note_x_map.items()}
@@ -810,9 +849,9 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
     x_hi = max(x for _, _, x, _, _ in pitch_slices) if pitch_slices else 1920
     face_yt, face_yb = int(face_yt), int(face_yb)
     if start_time is not None:
-        # Manual override: skip auto-detection
+        # Manual override: skip auto-detection (allows scanning before keyboard frame)
         play_start = int(start_time * fps)
-        play_start = max(start_frame, min(play_start, total_frames - 1))
+        play_start = max(0, min(play_start, total_frames - 1))
         print(f"  Using manual start time: frame {play_start} ({play_start/fps:.1f}s)")
     else:
         for f_scan in range(start_frame, min(start_frame + int(fps * 30), total_frames), 5):
@@ -853,22 +892,53 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
 
         confirmed_this_frame = []  # track new onsets to detect bar artifacts
 
+        # First pass: compute saturation for all keys this frame
+        frame_sat = {}
         for pitch, x1, x2, y1, y2 in pitch_slices:
             if y1 >= y2 or x1 >= x2:
+                frame_sat[pitch] = 0.0
                 continue
-            # Gate saturation by brightness: near-black pixels (V < 30)
-            # produce noisy saturation from video compression artifacts.
-            # Treat them as S=0 to prevent false note-on triggers.
             V_MIN = 30
             region_s = sat_channel[y1:y2, x1:x2]
             region_v = val_channel[y1:y2, x1:x2]
             bright_mask = region_v >= V_MIN
             if np.any(bright_mask):
-                sat = float(np.mean(region_s[bright_mask]))
+                frame_sat[pitch] = float(np.mean(region_s[bright_mask]))
             else:
-                sat = 0.0
+                frame_sat[pitch] = 0.0
 
-            thresh = SAT_ON_BLACK if (pitch % 12) in BLACK_SEMITONES_SET else SAT_ON
+        for pitch, x1, x2, y1, y2 in pitch_slices:
+            if y1 >= y2 or x1 >= x2:
+                continue
+            sat = frame_sat[pitch]
+
+            # Glow bleed suppression for black keys
+            is_black = (pitch % 12) in BLACK_SEMITONES_SET
+            if is_black and sat > 0:
+                # 1. Neighbor ratio: suppress if well below adjacent white key
+                neighbor_sat = max(frame_sat.get(pitch - 1, 0),
+                                   frame_sat.get(pitch + 1, 0))
+                if neighbor_sat > 0 and sat < neighbor_sat * 0.6:
+                    sat = 0.0
+                # 2. Coverage check: a real key press illuminates the full
+                #    detector width. A falling note bar edge clips only 1-2
+                #    pixels on one side.  Require >=60% of columns to have
+                #    saturated pixels.
+                elif (x2 - x1) > 0 and (x2 - x1) <= 8:
+                    col_region_s = sat_channel[y1:y2, x1:x2]
+                    col_region_v = val_channel[y1:y2, x1:x2]
+                    n_cols = x2 - x1
+                    lit_cols = 0
+                    for cx in range(n_cols):
+                        col_s = col_region_s[:, cx]
+                        col_v = col_region_v[:, cx]
+                        bright = col_v >= 30
+                        if np.any(bright) and float(np.mean(col_s[bright])) > SAT_ON_BLACK:
+                            lit_cols += 1
+                    if lit_cols < n_cols * 0.6:
+                        sat = 0.0
+
+            thresh = SAT_ON_BLACK if is_black else SAT_ON
             if pitch not in active and sat > thresh:
                 # Debounce: require 2 consecutive frames above threshold
                 # to filter single-frame glow bleed from adjacent keys.
@@ -1094,8 +1164,187 @@ def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
 
 
 # ---------------------------------------------------------------------------
+# Summary image
+# ---------------------------------------------------------------------------
+
+def generate_summary_image(cap, frame_idx, white_keys, black_keys, y_white,
+                           y_black, y_kb_top, note_x_map, det_regions, bpm,
+                           key_sig, green_is_right, rh_count, lh_count,
+                           output_path):
+    """Generate a visual summary image showing keyboard detection + settings.
+
+    Crops to the keyboard area with some context above, so the detectors
+    and key labels are clearly visible regardless of keyboard size.
+    """
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    if not ret:
+        return
+
+    h, w = frame.shape[:2]
+    NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    BLACK_SEMI = {1, 3, 6, 8, 10}
+
+    # Colors for detector overlays
+    WHITE_DET_COLOR = (0, 255, 0)    # green overlay for white key detectors
+    BLACK_DET_COLOR = (0, 0, 255)    # red overlay for black key detectors
+
+    # Draw detector regions as semi-transparent overlays
+    overlay = frame.copy()
+    for pitch, (x1, x2, y1, y2) in det_regions.items():
+        is_black = (pitch % 12) in BLACK_SEMI
+        color = BLACK_DET_COLOR if is_black else WHITE_DET_COLOR
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+    cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+    # Draw borders
+    for pitch, (x1, x2, y1, y2) in det_regions.items():
+        is_black = (pitch % 12) in BLACK_SEMI
+        color = BLACK_DET_COLOR if is_black else WHITE_DET_COLOR
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+
+    # Draw scan lines
+    cv2.line(frame, (0, y_white), (w, y_white), (255, 255, 0), 1)
+    if y_black is not None:
+        cv2.line(frame, (0, y_black), (w, y_black), (0, 255, 255), 1)
+
+    # Label C notes on the keyboard
+    for pitch, x_center in note_x_map.items():
+        if pitch % 12 == 0:
+            octave = pitch // 12 - 1
+            cv2.putText(frame, f"C{octave}", (x_center - 10, y_white + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+    # --- Info panel at top ---
+    rh_color_name = "green" if green_is_right else "blue"
+    lh_color_name = "blue" if green_is_right else "green"
+    rh_bgr = (0, 200, 0) if green_is_right else (255, 150, 0)
+    lh_bgr = (255, 150, 0) if green_is_right else (0, 200, 0)
+
+    panel_h = 80
+    frame[:panel_h, :] = (30, 30, 30)
+
+    # Line 1: settings
+    y_line1 = 22
+    info_line = (f"BPM: {bpm}    "
+                 f"Key: {key_sig or 'auto'}    "
+                 f"Keyboard: {len(white_keys)} white + {len(black_keys)} black keys    "
+                 f"Detection frame: {frame_idx}")
+    cv2.putText(frame, info_line, (10, y_line1),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
+    # Line 2: hand info with color swatches
+    y_line2 = 45
+    cv2.rectangle(frame, (10, y_line2 - 12), (26, y_line2 + 2), rh_bgr, -1)
+    cv2.putText(frame, f"Right hand ({rh_color_name}): {rh_count} notes", (32, y_line2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, rh_bgr, 1)
+    x2 = 320
+    cv2.rectangle(frame, (x2, y_line2 - 12), (x2 + 16, y_line2 + 2), lh_bgr, -1)
+    cv2.putText(frame, f"Left hand ({lh_color_name}): {lh_count} notes", (x2 + 22, y_line2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, lh_bgr, 1)
+
+    # Line 3: legend
+    y_line3 = 68
+    cv2.rectangle(frame, (10, y_line3 - 10), (22, y_line3), WHITE_DET_COLOR, -1)
+    cv2.putText(frame, "White key detector", (28, y_line3),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    cv2.rectangle(frame, (190, y_line3 - 10), (202, y_line3), BLACK_DET_COLOR, -1)
+    cv2.putText(frame, "Black key detector", (208, y_line3),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    cv2.line(frame, (370, y_line3 - 5), (390, y_line3 - 5), (255, 255, 0), 1)
+    cv2.putText(frame, "White key scan", (395, y_line3),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    if y_black is not None:
+        cv2.line(frame, (530, y_line3 - 5), (550, y_line3 - 5), (0, 255, 255), 1)
+        cv2.putText(frame, "Black key scan", (555, y_line3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+
+    # Crop to keyboard area: show from some context above the keys to below y_white.
+    # This ensures the keyboard is prominent even on videos with huge falling-notes areas.
+    kb_top = y_kb_top if y_kb_top is not None and y_kb_top > 0 else y_black - 50
+    context_above = max(30, (y_white - kb_top))  # show ~1 keyboard height above
+    crop_top = max(0, kb_top - context_above)
+    crop_bot = min(h, y_white + 30)
+    # Keep the info panel (top 80px) — paste it onto the cropped image
+    panel = frame[:panel_h, :].copy()
+    cropped = frame[crop_top:crop_bot, :]
+    # Stack: panel on top, cropped keyboard below
+    result = np.vstack([panel, cropped])
+
+    cv2.imwrite(output_path, result)
+    print(f"Summary image: {output_path}")
+
+
+# ---------------------------------------------------------------------------
 # MIDI building
 # ---------------------------------------------------------------------------
+
+# Major scale intervals (semitones from root): W W H W W W H
+_MAJOR_SCALE = {0, 2, 4, 5, 7, 9, 11}
+
+
+def _scale_pitches(key_str):
+    """Return the set of pitch classes (0-11) that belong to the given key.
+
+    key_str: e.g. 'G' (G major), 'Em' (E minor), 'Bb' (Bb major), 'F#m'.
+    """
+    NOTE_TO_PC = {
+        'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
+        'E': 4, 'Fb': 4, 'F': 5, 'E#': 5, 'F#': 6, 'Gb': 6,
+        'G': 7, 'G#': 8, 'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10,
+        'B': 11, 'Cb': 11,
+    }
+    minor = key_str.endswith('m')
+    tonic_str = key_str[:-1] if minor else key_str
+    root = NOTE_TO_PC.get(tonic_str, 0)
+    if minor:
+        # Natural minor = major scale starting 3 semitones up
+        rel_major_root = (root + 3) % 12
+    else:
+        rel_major_root = root
+    return {(rel_major_root + s) % 12 for s in _MAJOR_SCALE}
+
+
+def _snap_to_key(key_sig, right_events, left_events):
+    """Snap out-of-key note pitches to the nearest in-key pitch.
+
+    Corrects boundary detection errors (e.g. C# detected instead of C in G major).
+    Only modifies notes whose pitch class is not in the key's scale.
+    """
+    scale = _scale_pitches(key_sig)
+    snapped = 0
+
+    def snap_events(events):
+        nonlocal snapped
+        out = []
+        for ev in events:
+            tick, ev_type, pitch, vel = ev
+            if ev_type in ('note_on', 'note_off'):
+                pc = pitch % 12
+                if pc not in scale:
+                    # Try ±1 semitone; prefer the one that's in-key
+                    down, up = pitch - 1, pitch + 1
+                    down_in = (down % 12) in scale
+                    up_in = (up % 12) in scale
+                    if down_in and not up_in:
+                        new_pitch = down
+                    elif up_in and not down_in:
+                        new_pitch = up
+                    else:
+                        # Both or neither in scale — prefer downward (flat)
+                        new_pitch = down if down_in else pitch
+                    if new_pitch != pitch:
+                        if ev_type == 'note_on':
+                            snapped += 1
+                        pitch = new_pitch
+            out.append((tick, ev_type, pitch, vel))
+        return out
+
+    right_events = snap_events(right_events)
+    left_events = snap_events(left_events)
+    if snapped:
+        print(f"Snapped {snapped} out-of-key notes to nearest scale tone ({key_sig})")
+    return right_events, left_events
+
 
 def remove_overlaps(events):
     """Cut held notes when a new onset arrives, but keep chords intact.
@@ -1456,7 +1705,7 @@ def main():
 
     # --- Step 1: Detect keyboard ---
     print("--- Step 1: Detect keyboard ---")
-    white_keys, black_keys, y_white, y_black = detect_keyboard(cap, frame_idx=frame_idx)
+    white_keys, black_keys, y_white, y_black, y_kb_top, y_bk_bottom = detect_keyboard(cap, frame_idx=frame_idx)
 
     y_sample_top = y_white - cfg['sampling']['y_offset_top']
     y_sample_bot = y_white - cfg['sampling']['y_offset_bot']
@@ -1507,7 +1756,8 @@ def main():
             cap, note_x_map, y_sample_top, y_sample_bot,
             half_w, fps, total_frames, green_is_right, cfg['colors'],
             start_frame=frame_idx, frame_step=1, white_keys=white_keys, cfg=cfg,
-            y_black=y_black, start_time=args.start_time)
+            y_black=y_black, start_time=args.start_time, y_kb_top=y_kb_top,
+            y_bk_bottom=y_bk_bottom)
 
         # --- End-of-music detection ---
         # Scan backward from the last frame to find the last frame with lit keys.
@@ -1547,18 +1797,6 @@ def main():
         pre_trim_count = len(video_notes)
         video_notes = [n for n in video_notes if n[2] <= music_end_sec]
 
-        # Trim end-screen popup artifacts: YouTube end screens overlay colored
-        # elements (mini keyboards, subscribe buttons) that trigger a burst of
-        # simultaneous false notes.  If the last timestamp has 3+ notes starting
-        # together, remove them — real music rarely has 3+ simultaneous onsets
-        # at the very end.
-        if video_notes:
-            last_t = video_notes[-1][2]
-            tail = [n for n in video_notes if abs(n[2] - last_t) < 0.1]
-            if len(tail) >= 3:
-                video_notes = [n for n in video_notes if abs(n[2] - last_t) >= 0.1]
-                print(f"  Trimmed {len(tail)} end-screen popup notes at {last_t:.1f}s")
-
         trimmed = pre_trim_count - len(video_notes)
         if trimmed > 0:
             print(f"  Trimmed {trimmed} total trailing/popup notes")
@@ -1575,11 +1813,21 @@ def main():
         print(f"\nMusic range: {music_start_sec:.1f}s \u2013 {music_end_sec:.1f}s "
               f"({duration:.1f}s duration)")
 
-        cap.release()
-
         right_count = sum(1 for _, h, _, _ in video_notes if h == 0)
         left_count = sum(1 for _, h, _, _ in video_notes if h == 1)
         print(f"Extracted {len(video_notes)} notes: right={right_count}, left={left_count}")
+
+        # Generate summary image alongside the output MIDI
+        det_regions = build_detector_regions(note_x_map, white_keys, y_white,
+                                             cfg=cfg, y_black=y_black, y_kb_top=y_kb_top,
+                                             y_bk_bottom=y_bk_bottom)
+        summary_path = os.path.splitext(args.output)[0] + '-summary.png'
+        generate_summary_image(cap, frame_idx, white_keys, black_keys,
+                               y_white, y_black, y_kb_top, note_x_map,
+                               det_regions, OUT_BPM, args.key, green_is_right,
+                               right_count, left_count, summary_path)
+
+        cap.release()
 
         if not video_notes:
             print("ERROR: No notes detected in video.", file=sys.stderr)
@@ -1603,12 +1851,22 @@ def main():
         right_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 0]
         left_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 1]
 
-        # Quantize each hand with its own PLL and grid
+        # Quantize each hand with its own quantizer and grid
         def quantize_hand(indices, subdivisions):
             onsets = [video_notes[i][2] - first_onset for i in indices]
             offsets = [video_notes[i][3] - first_onset for i in indices]
-            on_g = quantize_onsets_pll(onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
-            off_g = quantize_onsets_pll(offsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+            s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
+            if subdivisions == 4:
+                on_g = quantize_onsets_viterbi(onsets, OUT_BPM)
+            else:
+                on_g = quantize_onsets_pll(onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+            # Derive offset grid from onset grid + quantized duration
+            # (independent offset quantization drifts badly)
+            off_g = []
+            for i_idx, on_pos in enumerate(on_g):
+                raw_dur = offsets[i_idx] - onsets[i_idx]
+                dur_grid = max(1, round(raw_dur / s))
+                off_g.append(on_pos + dur_grid)
             return on_g, off_g
 
         r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
@@ -1743,35 +2001,37 @@ def main():
         else:
             left_events = evts
 
-    out_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
-    out_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
-    out_mid.tracks.append(build_track(left_events, 'Left Hand', OUT_US_PER_BEAT))
-
-    # Add key signature: use --key if provided, otherwise auto-detect
+    # --- Key signature: use explicit --key or auto-detect for metadata ---
     key_sig = args.key
+    key_auto = False
     if not key_sig:
+        # Auto-detect key for MIDI metadata (informational only)
+        tmp_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
+        tmp_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
+        tmp_mid.tracks.append(build_track(left_events, 'Left Hand', OUT_US_PER_BEAT))
+        tmp_mid.save(args.output)
         try:
             from music21 import converter as m21_converter
-            score = m21_converter.parse(args.output)  # parse what we just built
+            score = m21_converter.parse(args.output)
         except Exception:
             score = None
-        if score is None:
-            # music21 not available or parse failed — save first, then try
-            out_mid.save(args.output)
-            try:
-                from music21 import converter as m21_converter
-                score = m21_converter.parse(args.output)
-            except Exception:
-                score = None
         if score is not None:
             detected = score.analyze('key')
-            # Convert music21 key to MIDI key_signature format
             tonic = detected.tonic.name.replace('-', 'b')
             if detected.mode == 'minor':
                 key_sig = tonic + 'm'
             else:
                 key_sig = tonic
+            key_auto = True
             print(f"Key auto-detected: {detected} (confidence={detected.correlationCoefficient:.2f})")
+
+    # --- Snap out-of-key notes only when key was explicitly specified ---
+    if key_sig and not key_auto:
+        right_events, left_events = _snap_to_key(key_sig, right_events, left_events)
+
+    out_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
+    out_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
+    out_mid.tracks.append(build_track(left_events, 'Left Hand', OUT_US_PER_BEAT))
 
     if key_sig:
         out_mid.tracks[0].insert(0, MetaMessage('key_signature', key=key_sig, time=0))

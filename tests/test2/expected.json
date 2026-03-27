@@ -14,10 +14,11 @@
   },
   "ground_truth": "ground_truth.mid",
   "ground_truth_stats": {
-    "right_hand_notes": 299,
-    "left_hand_notes": 313,
-    "right_hand_range": "B3-A#5",
-    "left_hand_range": "C#2-C#4"
+    "right_hand_notes": 244,
+    "left_hand_notes": 307,
+    "right_hand_range": "B3-F#5",
+    "left_hand_range": "C#2-C#4",
+    "note": "GT cleaned: removed 46 off-screen notes (A#5/G#5 beyond 26-key keyboard) and 14 notes not visible in video"
   },
   "first_notes": {
     "right_hand": {

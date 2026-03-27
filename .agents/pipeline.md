@@ -21,7 +21,7 @@ notes directly from the video — no audio transcription needed. The `midi` argu
 optional; omit it for video-only mode:
 
 ```bash
-python pianovideoscribe.py video.mp4 output.mid --bpm BPM --frame FRAME --right-hand monophonic --left-hand no-overlap --key KEY
+python pianovideoscribe.py video.mp4 output-video.mid --bpm BPM --frame FRAME --right-hand monophonic --left-hand no-overlap --key KEY
 ```
 
 This scans every frame, detects which keys are lit (absolute saturation threshold),
@@ -43,14 +43,14 @@ classifies each as right hand (green) or left hand (blue), and outputs a two-tra
 ### 3. Export to PDF and open for the user
 
 ```bash
-"/Applications/MuseScore 4.app/Contents/MacOS/mscore" output.mid -o sheet.pdf
+"/Applications/MuseScore 4.app/Contents/MacOS/mscore" output-video.mid -o sheet.pdf
 ```
 
 MuseScore 4 prints QML type warnings — harmless, ignore them.
 
 **Do NOT open files automatically.** Just give the user the file path to click:
 ```
-output.mid
+output-video.mid
 ```
 
 ### Output location
@@ -64,7 +64,7 @@ opportunistically when touching them, not in bulk.
   <song-name>.pdf          ← sheet music
   <song-name>.md           ← audio YouTube URL for the student
   README.md                ← video URL, BPM, key, colors (for reproducibility)
-  video.mp4, output.mid, config.json, ...  ← working files
+  video.mp4, output-video.mid, config.json, ...  ← working files
 ```
 
 ### Important: MuseScore overrides MIDI tempo
@@ -94,7 +94,7 @@ transcriptor.transcribe(audio, 'transcription.mid')
 
 Then pass the MIDI to the script for hand separation:
 ```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm BPM --left-hand no-overlap
+python pianovideoscribe.py video.mp4 transcription.mid output-video.mid --bpm BPM --left-hand no-overlap
 ```
 
 ---
@@ -140,6 +140,11 @@ python detect_colors.py video.mp4
 This compares a neutral keyboard frame against frames with notes playing, finds pixels
 that changed from unsaturated to saturated, and clusters the hues to identify the two
 hand colors. No config file needed — it suggests HSV ranges automatically.
+
+**IMPORTANT: `detect_colors.py` cannot determine which color is right vs left — it just
+lists the detected colors.** Do NOT blindly use its suggested right/left assignment.
+Verify by watching the video: the color on the higher notes (right side of keyboard) is
+the right hand. If the assignment looks wrong, swap right/left in the config.
 
 ---
 

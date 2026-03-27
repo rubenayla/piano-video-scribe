@@ -1,0 +1,33 @@
+{
+  "description": "Synthesia video, two-hand, cyan right / purple left, 4/4 time, partial keyboard, easy piano",
+  "source_url": "https://youtu.be/iWbKrq-oEJo",
+  "song": "Faded - Alan Walker (Easy Piano)",
+  "bpm": 88,
+  "time_signature": [4, 4],
+  "key": "Em",
+  "keyboard": {
+    "frame": 180,
+    "white_keys_expected": 19,
+    "black_keys_expected": 13,
+    "labels_visible": ["C3", "C4", "C5"]
+  },
+  "colors": {
+    "right_hand": "cyan",
+    "left_hand": "purple/magenta",
+    "config": "tests/test7/config.json"
+  },
+  "output_stats": {
+    "right_hand_notes": 385,
+    "left_hand_notes": 165,
+    "total_notes": 550,
+    "right_hand_range": "D5-G6",
+    "left_hand_range": "C4-D5",
+    "c_sharp_notes": 0,
+    "out_of_key_snapped": 125
+  },
+  "pitch_classes_used": ["C", "D", "E", "F#", "G", "A", "B"],
+  "known_issues": [
+    "Octave mapping likely off by +1 (keyboard shows C3-C5 labels but mapped from C4). Known issue with partial keyboards.",
+    "125 notes snapped to Em scale — may indicate some detection noise at key boundaries"
+  ]
+}

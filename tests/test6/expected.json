@@ -1,0 +1,37 @@
+{
+  "description": "Synthesia-style video, two-hand, teal/green right / salmon/peach left, Remember Me from Coco, easy tutorial with note labels",
+  "source_url": "https://youtu.be/e5qsyTX6VyE",
+  "bpm": "unknown",
+  "time_signature": [4, 4],
+  "keyboard": {
+    "frame": 600,
+    "white_keys_expected": 35,
+    "black_keys_expected": 25
+  },
+  "colors": {
+    "right_hand": "teal",
+    "left_hand": "salmon"
+  },
+  "ground_truth": "ground_truth.mid",
+  "first_notes": {
+    "right_hand": {
+      "comment": "Right hand plays teal/green labeled notes (C, D, E, etc.)"
+    },
+    "left_hand": {
+      "comment": "Left hand plays salmon/peach labeled notes (F)"
+    }
+  },
+  "checks": [
+    "Non-standard color scheme: teal right hand, salmon/peach left hand",
+    "Note name labels displayed on falling blocks",
+    "Partial keyboard (~35 white keys visible)",
+    "C4 label visible on keyboard",
+    "Black intro screen for first few seconds",
+    "Key signature annotations on left margin (F major)"
+  ],
+  "known_issues": [
+    "Non-standard color scheme may require custom color calibration",
+    "Note labels on blocks may interfere with note detection",
+    "Video starts with black screen - keyboard detection needs later frame"
+  ]
+}
