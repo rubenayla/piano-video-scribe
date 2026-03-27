@@ -448,6 +448,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
     # Extrapolate one white key beyond each edge using average spacing.
     # Synthesia videos often have partially-visible keys at the edges that
     # the keyboard detector misses, but note bars still appear on them.
+    extrapolated_whites = set()
     if len(white_keys) >= 2:
         avg_w = np.mean(np.diff(white_keys))
         # Left edge: add one key below the lowest mapped white key
@@ -463,6 +464,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
                 prev_midi = lowest_midi - 1  # C → B
             if prev_midi >= 21:
                 note_x_map[prev_midi] = left_x
+                extrapolated_whites.add(prev_midi)
         # Right edge: add one key above the highest mapped white key
         highest_midi = max(m for m in note_x_map if m % 12 in [0, 2, 4, 5, 7, 9, 11])
         highest_x = note_x_map[highest_midi]
@@ -476,14 +478,21 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
                 next_midi = highest_midi + 1  # B → C
             if next_midi <= 108:
                 note_x_map[next_midi] = right_x
+                extrapolated_whites.add(next_midi)
 
     # Assign black keys using actual detected positions where available,
     # falling back to midpoint of flanking white keys.
+    # Skip black keys adjacent to extrapolated edge keys (unreliable position).
     for wm in list(note_x_map.keys()):
         semi = wm % 12
         if semi in [0, 2, 5, 7, 9]:  # C, D, F, G, A have a sharp to the right
+            # Skip black keys adjacent to extrapolated edge keys
+            if wm in extrapolated_whites:
+                continue
             black_midi = wm + 1
             next_white = wm + 2
+            if next_white in extrapolated_whites:
+                continue
             if next_white not in note_x_map:
                 continue
             midpoint = (note_x_map[wm] + note_x_map[next_white]) // 2

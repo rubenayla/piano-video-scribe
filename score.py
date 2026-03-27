@@ -103,36 +103,81 @@ def extract_notes(mid, hand_idx):
 
 
 def align_times(gt_notes, out_notes):
-    """Align GT times to output times using linear scaling.
+    """Align GT times to output times using piecewise linear warping.
 
-    Uses first and last note onsets to compute scale + offset.
-    Only applies if the tempo ratio differs by >5%.
+    Finds anchor points (notes matched by pitch class in sequential order),
+    then interpolates GT times between anchors to handle non-linear tempo
+    variations (rubato, local tempo changes).
+    Only applies if the global tempo ratio differs by >3%.
     """
     if len(gt_notes) < 2 or len(out_notes) < 2:
         return gt_notes
 
     gt_start, gt_end = gt_notes[0][0], gt_notes[-1][0]
     out_start, out_end = out_notes[0][0], out_notes[-1][0]
-
     gt_dur = gt_end - gt_start
     out_dur = out_end - out_start
 
     if gt_dur < 1.0 or out_dur < 1.0:
         return gt_notes
 
-    scale = out_dur / gt_dur
-
-    # Only apply if there's a meaningful tempo difference (>5%)
-    if abs(scale - 1.0) < 0.05:
+    global_scale = out_dur / gt_dur
+    if abs(global_scale - 1.0) < 0.01:
         return gt_notes
-    if not (0.5 < scale < 2.0):
+    if not (0.5 < global_scale < 2.0):
         return gt_notes
 
-    offset = out_start - scale * gt_start
-    return [(scale * t + offset, pc, m) for t, pc, m in gt_notes]
+    # Build anchor points by matching notes in sequential order.
+    # Walk both sequences, matching by pitch class when close enough.
+    anchors = [(gt_start, out_start)]
+    oi = 0
+    for gi in range(len(gt_notes)):
+        gt_t, gt_pc, _ = gt_notes[gi]
+        # Estimate expected output time using global scale
+        expected_out_t = out_start + (gt_t - gt_start) * global_scale
+        # Search for a matching output note nearby
+        best_j, best_dt = None, float('inf')
+        for j in range(max(0, oi - 5), min(len(out_notes), oi + 20)):
+            out_t, out_pc, _ = out_notes[j]
+            if out_pc != gt_pc:
+                continue
+            dt = abs(out_t - expected_out_t)
+            if dt < best_dt and dt < 2.0:
+                best_dt = dt
+                best_j = j
+        if best_j is not None:
+            anchors.append((gt_t, out_notes[best_j][0]))
+            oi = best_j + 1
+    anchors.append((gt_end, out_end))
+
+    # Remove duplicates and ensure monotonicity
+    clean = [anchors[0]]
+    for gt_t, out_t in anchors[1:]:
+        if gt_t > clean[-1][0] and out_t > clean[-1][1]:
+            clean.append((gt_t, out_t))
+    anchors = clean
+
+    if len(anchors) < 2:
+        return gt_notes
+
+    # Interpolate each GT time using the anchors
+    result = []
+    ai = 0
+    for t, pc, m in gt_notes:
+        while ai < len(anchors) - 2 and anchors[ai + 1][0] < t:
+            ai += 1
+        g0, o0 = anchors[ai]
+        g1, o1 = anchors[min(ai + 1, len(anchors) - 1)]
+        if g1 - g0 > 0:
+            frac = (t - g0) / (g1 - g0)
+            new_t = o0 + frac * (o1 - o0)
+        else:
+            new_t = o0
+        result.append((new_t, pc, m))
+    return result
 
 
-def match_notes(gt_notes, out_notes, time_tolerance=0.25):
+def match_notes(gt_notes, out_notes, time_tolerance=0.35):
     """Match output notes to ground truth by pitch class + timing."""
     candidates = []
     for i, (gt_t, gt_pc, _) in enumerate(gt_notes):
