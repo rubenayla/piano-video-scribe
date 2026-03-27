@@ -1,0 +1,22 @@
+{
+  "description": "Rousseau - River Flows in You (Yiruma), falling notes with light effects, green notes",
+  "source_url": "https://youtu.be/NPBCbTZWnq0",
+  "style": "falling-notes-rousseau",
+  "resolution": "1280x720",
+  "fps": 25,
+  "duration_sec": 215.3,
+  "keyboard": {
+    "position": "bottom portion of frame, real piano with hands visible",
+    "comment": "Physical keyboard filmed from above, Rousseau style with glow/particle effects on key press"
+  },
+  "colors": {
+    "notes": "green (both hands, single color)",
+    "background": "black/very dark with subtle smoke/particle effects",
+    "key_press_glow": "green/white glow on pressed keys"
+  },
+  "falling_notes": {
+    "direction": "top to bottom",
+    "note_shape": "thin vertical bars with glow effect",
+    "comment": "Rousseau signature style - green glowing bars falling onto keyboard. Watermark visible: youtube.com/rousseaumusique"
+  }
+}
