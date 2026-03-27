@@ -39,35 +39,121 @@ def midi_to_name(midi_num):
 
 
 # ---------------------------------------------------------------------------
-# Color masks
+# Color detection
 # ---------------------------------------------------------------------------
 
-def blue_mask(hsv_region):
-    """Boolean mask for blue (RH) pixels."""
-    return ((hsv_region[:, :, 0] >= 100) & (hsv_region[:, :, 0] <= 140) &
-            (hsv_region[:, :, 1] > 80) & (hsv_region[:, :, 2] > 80))
+def auto_detect_colors(cap, y_min, y_max, n_frames=20):
+    """Auto-detect the two hand colors from block pixels.
+
+    Samples multiple frames, collects hues of saturated pixels in the
+    waterfall region, and finds the two dominant hue clusters.
+
+    Returns list of dicts: [{'name': str, 'h_center': int, 'h_min': int, 'h_max': int}]
+    """
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    all_hues = []
+
+    for fi in range(0, total, max(1, total // n_frames)):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        region = hsv[y_min:y_max, :, :]
+        sat_mask = (region[:, :, 1] > 80) & (region[:, :, 2] > 80)
+        hues = region[:, :, 0][sat_mask]
+        all_hues.extend(int(h) for h in hues)
+
+    if not all_hues:
+        # Fallback: standard green/blue
+        return [
+            {'name': 'color1', 'h_center': 55, 'h_min': 35, 'h_max': 75},
+            {'name': 'color2', 'h_center': 110, 'h_min': 90, 'h_max': 130},
+        ]
+
+    # Build hue histogram (0-180)
+    hist = np.zeros(180, dtype=int)
+    for h in all_hues:
+        hist[h % 180] += 1
+
+    # Smooth and find peaks
+    from scipy.ndimage import uniform_filter1d
+    try:
+        smooth = uniform_filter1d(hist.astype(float), size=10, mode='wrap')
+    except ImportError:
+        # No scipy — manual smoothing
+        smooth = np.convolve(hist.astype(float), np.ones(10) / 10, mode='same')
+
+    # Find peaks: local maxima above 10% of max
+    threshold = smooth.max() * 0.1
+    peaks = []
+    for i in range(180):
+        if smooth[i] > threshold:
+            prev = smooth[(i - 1) % 180]
+            next_ = smooth[(i + 1) % 180]
+            if smooth[i] >= prev and smooth[i] >= next_:
+                peaks.append((i, int(smooth[i])))
+
+    # Merge nearby peaks (within 15 hue units)
+    merged_peaks = []
+    for h, c in sorted(peaks, key=lambda x: -x[1]):
+        if not any(abs(h - mh) < 15 or abs(h - mh) > 165 for mh, _ in merged_peaks):
+            merged_peaks.append((h, c))
+        if len(merged_peaks) >= 2:
+            break
+
+    colors = []
+    for h_center, _ in merged_peaks:
+        colors.append({
+            'name': f'h{h_center}',
+            'h_center': h_center,
+            'h_min': (h_center - 15) % 180,
+            'h_max': (h_center + 15) % 180,
+        })
+
+    return colors
 
 
-def red_mask(hsv_region):
-    """Boolean mask for red (LH) pixels. Red hue wraps around 0/180."""
-    return (((hsv_region[:, :, 0] <= 10) | (hsv_region[:, :, 0] >= 170)) &
-            (hsv_region[:, :, 1] > 80) & (hsv_region[:, :, 2] > 80))
+def make_color_mask(hsv_region, color):
+    """Create a boolean mask for a detected color range."""
+    h_min = color['h_min']
+    h_max = color['h_max']
+    s_min = 80
+    v_min = 80
+
+    if h_min > h_max:  # wraps around 0/180 (red)
+        return (((hsv_region[:, :, 0] >= h_min) | (hsv_region[:, :, 0] <= h_max)) &
+                (hsv_region[:, :, 1] > s_min) & (hsv_region[:, :, 2] > v_min))
+    else:
+        return ((hsv_region[:, :, 0] >= h_min) & (hsv_region[:, :, 0] <= h_max) &
+                (hsv_region[:, :, 1] > s_min) & (hsv_region[:, :, 2] > v_min))
 
 
 # ---------------------------------------------------------------------------
 # Block detection via contours
 # ---------------------------------------------------------------------------
 
-def detect_blocks_in_frame(hsv, y_min, y_max):
+def detect_blocks_in_frame(hsv, y_min, y_max, colors=None):
     """Detect colored blocks in the falling region of a single frame.
 
-    Returns list of (x_center, width, height, y_bottom, color) tuples.
+    Args:
+        colors: list of color dicts from auto_detect_colors(). If None,
+                uses hardcoded blue/green fallback.
+
+    Returns list of (x_center, width, height, y_bottom, color_idx) tuples.
+    color_idx is the index into the colors list (0 = first/higher pitch = RH).
     """
+    if colors is None:
+        colors = [
+            {'name': 'green', 'h_min': 35, 'h_max': 75},
+            {'name': 'blue', 'h_min': 90, 'h_max': 130},
+        ]
+
     region = hsv[y_min:y_max, :, :]
     blocks = []
 
-    for color_name, mask_fn in [('blue', blue_mask), ('red', red_mask)]:
-        mask = mask_fn(region).astype(np.uint8) * 255
+    for ci, color in enumerate(colors):
+        mask = make_color_mask(region, color).astype(np.uint8) * 255
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
@@ -76,7 +162,7 @@ def detect_blocks_in_frame(hsv, y_min, y_max):
             if 8 < bw < 55 and bh > 3 and area > 40:
                 cx = x + bw / 2.0
                 y_bot = y + bh + y_min
-                blocks.append((cx, bw, bh, y_bot, color_name))
+                blocks.append((cx, bw, bh, y_bot, color['name']))
 
     return blocks
 
@@ -85,7 +171,7 @@ def detect_blocks_in_frame(hsv, y_min, y_max):
 # Step 1-2: Collect and cluster block x-positions
 # ---------------------------------------------------------------------------
 
-def collect_and_cluster_blocks(cap, y_min, y_max, sample_step=2):
+def collect_and_cluster_blocks(cap, y_min, y_max, sample_step=2, colors=None):
     """Scan frames, detect blocks, cluster x-positions into discrete keys.
 
     Returns list of (x_center, count, median_width) sorted by x.
@@ -100,7 +186,7 @@ def collect_and_cluster_blocks(cap, y_min, y_max, sample_step=2):
         if not ret:
             break
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        for (cx, bw, bh, y_bot, color) in detect_blocks_in_frame(hsv, y_min, y_max):
+        for (cx, bw, bh, y_bot, color) in detect_blocks_in_frame(hsv, y_min, y_max, colors=colors):
             all_xs.append(cx)
             all_ws.append(bw)
 
@@ -506,7 +592,7 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 
 def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
-                          merge_tolerance=0.2, min_duration=0.05,
+                          colors=None, merge_tolerance=0.2, min_duration=0.05,
                           sample_step=3):
     """Extract notes by detecting block contours and projecting onset/duration.
 
@@ -514,14 +600,11 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
       - pitch (from x-position)
       - onset_time = frame_time + (keyboard_y - block_bottom) / speed
       - duration = block_height / speed
-      - hand (from color)
+      - hand (from color — auto-assigned based on pitch range)
 
     Multiple frames observing the same block produce multiple observations
     with nearly identical onset times. These are merged (median onset,
     median duration) to produce the final note list.
-
-    This is like NMS in object detection: each frame is an independent
-    detector, and we merge overlapping detections in (pitch, time) space.
     """
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -541,10 +624,8 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
                 return midi
         return min(boundaries, key=lambda b: abs(b[3] - cx))[0]
 
-    hand_map = {'blue': 0, 'red': 1}
-
-    # Phase 1: Collect observations from every Nth frame
-    observations = []  # (pitch, hand, onset_sec, dur_sec)
+    # Phase 1: Collect observations with color names (hand assigned later)
+    observations = []  # (pitch, color_name, onset_sec, dur_sec)
 
     for fi in range(0, total, sample_step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
@@ -553,15 +634,14 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
             break
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        blocks = detect_blocks_in_frame(hsv, y_min, keyboard_y)
+        blocks = detect_blocks_in_frame(hsv, y_min, keyboard_y, colors=colors)
 
         t_now = fi / fps
-        for cx, bw, bh, y_bot, color in blocks:
+        for cx, bw, bh, y_bot, color_name in blocks:
             pitch = x_to_pitch(cx)
-            hand = hand_map.get(color)
             onset_sec = t_now + max(0, keyboard_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
-            observations.append((pitch, hand, onset_sec, dur_sec))
+            observations.append((pitch, color_name, onset_sec, dur_sec))
 
         if fi % 500 == 0 and fi > 0:
             print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
@@ -569,22 +649,46 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
 
     print(f"  {len(observations)} observations from {total // sample_step} frames")
 
-    # Phase 2: Merge observations into notes
+    # Phase 2: Auto-assign hands based on average pitch per color
+    color_pitches = defaultdict(list)
+    for pitch, color_name, onset, dur in observations:
+        color_pitches[color_name].append(pitch)
+
+    if len(color_pitches) >= 2:
+        # Color with higher average pitch = RH (hand 0)
+        color_avg = {c: np.mean(ps) for c, ps in color_pitches.items()}
+        sorted_colors = sorted(color_avg, key=lambda c: -color_avg[c])
+        hand_map = {sorted_colors[0]: 0}  # highest pitch = RH
+        for c in sorted_colors[1:]:
+            hand_map[c] = 1  # lower pitch = LH
+        assignments = ', '.join(f'{c}={"RH" if h==0 else "LH"}' for c, h in hand_map.items())
+        print(f"  Hand assignment: {assignments}")
+    elif len(color_pitches) == 1:
+        # Single color — assign hand by pitch (>=60 = RH)
+        hand_map = {list(color_pitches.keys())[0]: None}
+        print(f"  Single color detected — hand from pitch")
+    else:
+        hand_map = {}
+
+    # Replace color names with hand indices
+    obs_with_hands = [(pitch, hand_map.get(cn), onset, dur)
+                      for pitch, cn, onset, dur in observations]
+
     # Sort by (pitch, hand, onset) then cluster overlapping onsets
-    observations.sort(key=lambda o: (o[0], o[1] or 0, o[2]))
+    obs_with_hands.sort(key=lambda o: (o[0], o[1] or 0, o[2]))
 
     notes = []
     i = 0
-    while i < len(observations):
-        pitch, hand, onset, dur = observations[i]
+    while i < len(obs_with_hands):
+        pitch, hand, onset, dur = obs_with_hands[i]
         group_onsets = [onset]
         group_durs = [dur]
 
         # Grow cluster: add next observations if they overlap in time
         j = i + 1
         cluster_end = onset + dur + merge_tolerance
-        while j < len(observations):
-            p2, h2, on2, dur2 = observations[j]
+        while j < len(obs_with_hands):
+            p2, h2, on2, dur2 = obs_with_hands[j]
             if p2 != pitch or h2 != hand:
                 break
             if on2 <= cluster_end:
@@ -744,9 +848,18 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     y_max = kb_y - 2  # blocks fall to just above the dark line
     print(f"  Block region: y={y_min}..{y_max}")
 
+    # Step 1b: Auto-detect block colors
+    print(f"\n--- Step 1b: Detecting block colors ---")
+    colors = auto_detect_colors(cap, y_min, y_max)
+    for c in colors:
+        print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']})")
+    # Assign hand: higher-hue color is typically blue=LH, lower=green=RH
+    # But this varies — we'll assign hand later based on pitch range
+    hand_names = [c['name'] for c in colors]
+
     # Step 2: Collect and cluster block positions
     print(f"\n--- Step 2: Collecting & clustering blocks ---")
-    key_positions = collect_and_cluster_blocks(cap, y_min, y_max)
+    key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
     print(f"  {len(key_positions)} discrete keys:")
     for x, n, mw in key_positions:
         print(f"    x={x:7.1f}  n={n:4d}  w={mw:5.1f}  "
