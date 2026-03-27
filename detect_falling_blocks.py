@@ -15,6 +15,25 @@ import cv2
 import numpy as np
 
 
+def find_ui_bar(hsv_frame, waterfall_top, waterfall_bottom):
+    """Detect horizontal UI bars (full-width saturated bands) in the waterfall.
+
+    Returns (bar_top, bar_bottom) or None if no bar found.
+    """
+    h, w = hsv_frame.shape[:2]
+    bar_top = None
+    for y in range(waterfall_top, waterfall_bottom):
+        row_s = hsv_frame[y, :, 1]
+        wide_sat = int(np.sum(row_s > 20))
+        if wide_sat > w * 0.4 and bar_top is None:
+            bar_top = y
+        elif wide_sat < w * 0.2 and bar_top is not None:
+            return (bar_top, y)
+    if bar_top is not None:
+        return (bar_top, waterfall_bottom)
+    return None
+
+
 def detect_blocks_in_frame(hsv_frame, waterfall_top, waterfall_bottom,
                            note_x_map, color_ranges, min_area=50):
     """Detect colored note blocks in a single frame's waterfall region.
@@ -44,10 +63,18 @@ def detect_blocks_in_frame(hsv_frame, waterfall_top, waterfall_bottom,
         s_min = color.get('s_min', 80)
         v_min = color.get('v_min', 80)
 
-        # HSV threshold
-        lower = np.array([h_min, s_min, v_min])
-        upper = np.array([h_max, 255, 255])
-        mask = cv2.inRange(waterfall, lower, upper)
+        # HSV threshold (handle red hue wrap-around: H near 0 and 180)
+        if h_min > h_max:
+            # Wrap-around: e.g., h_min=170, h_max=10 means red
+            mask1 = cv2.inRange(waterfall, np.array([h_min, s_min, v_min]),
+                                np.array([180, 255, 255]))
+            mask2 = cv2.inRange(waterfall, np.array([0, s_min, v_min]),
+                                np.array([h_max, 255, 255]))
+            mask = mask1 | mask2
+        else:
+            lower = np.array([h_min, s_min, v_min])
+            upper = np.array([h_max, 255, 255])
+            mask = cv2.inRange(waterfall, lower, upper)
 
         # Morphological cleanup
         kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
