@@ -3,7 +3,12 @@
 
 ## TODO
 
-- **hands-on-keyboard-video-support**: Support videos where hands are visible on a real keyboard with Synthesia-style falling notes above. Instead of detecting key press colors on the keyboard, the system would read the falling note blocks. Reference video: https://youtu.be/kvSNAgwa-O8 (hands playing on real keyboard with falling notes overlay).
+- **falling-blocks-detector**: Detect notes from falling colored blocks (branch: falling-notes-detector). Prototype works but output is poor quality. Needs:
+  - Better keyboard detection on dark videos (currently finds only 7 of ~36 keys)
+  - Correct pitch mapping (C position wrong due to missing black keys)
+  - BPM detection from block speed (currently hardcoded)
+  - Reference videos: https://youtu.be/kvSNAgwa-O8 (Hedwig's Theme), https://youtu.be/NPBCbTZWnq0 (Rousseau)
+  - Hard test: https://youtu.be/e8jN1-HC-Vc (complex, many effects)
 
 ## In Progress
 
