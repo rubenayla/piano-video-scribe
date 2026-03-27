@@ -506,25 +506,28 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 
 def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
-                          merge_tolerance=0.15, min_duration=0.08):
-    """Extract notes by detecting block contours and projecting onset times.
+                          merge_tolerance=0.2, min_duration=0.05,
+                          sample_step=3):
+    """Extract notes by detecting block contours and projecting onset/duration.
 
-    For each block in each frame, computes:
-      - onset_time = current_time + (keyboard_y - y_bottom) / fall_speed / fps
-      - duration = block_height / fall_speed / fps
-    Then clusters overlapping (pitch, onset) pairs to deduplicate.
+    Each block in each frame independently provides:
+      - pitch (from x-position)
+      - onset_time = frame_time + (keyboard_y - block_bottom) / speed
+      - duration = block_height / speed
+      - hand (from color)
 
-    Args:
-        keyboard_y: y-coordinate where blocks reach the keyboard
-        fall_speed: block fall speed in px/frame
-        merge_tolerance: merge notes within this many seconds
-        min_duration: discard notes shorter than this
+    Multiple frames observing the same block produce multiple observations
+    with nearly identical onset times. These are merged (median onset,
+    median duration) to produce the final note list.
+
+    This is like NMS in object detection: each frame is an independent
+    detector, and we merge overlapping detections in (pitch, time) space.
     """
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     px_per_sec = fall_speed * fps
 
-    # Build x -> pitch mapping
+    # Build x -> pitch mapping with boundaries
     pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
     boundaries = []
     for i, (midi, x) in enumerate(pitches_sorted):
@@ -540,10 +543,9 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
 
     hand_map = {'blue': 0, 'red': 1}
 
-    # Collect all note observations: (pitch, hand, onset_sec, duration_sec)
-    observations = []
+    # Phase 1: Collect observations from every Nth frame
+    observations = []  # (pitch, hand, onset_sec, dur_sec)
 
-    sample_step = 3  # sample every 3 frames for speed
     for fi in range(0, total, sample_step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
         ret, frame = cap.read()
@@ -557,27 +559,20 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
         for cx, bw, bh, y_bot, color in blocks:
             pitch = x_to_pitch(cx)
             hand = hand_map.get(color)
-
-            # Time until bottom reaches keyboard
-            frames_to_kb = max(0, (keyboard_y - y_bot)) / fall_speed
-            onset_sec = t_now + frames_to_kb / fps
-
-            # Duration from block height
+            onset_sec = t_now + max(0, keyboard_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
-
             observations.append((pitch, hand, onset_sec, dur_sec))
 
         if fi % 500 == 0 and fi > 0:
             print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
                   f"— {len(observations)} observations")
 
-    print(f"  Total observations: {len(observations)}")
+    print(f"  {len(observations)} observations from {total // sample_step} frames")
 
-    # Cluster observations into discrete notes
-    # Sort by (pitch, hand, onset)
+    # Phase 2: Merge observations into notes
+    # Sort by (pitch, hand, onset) then cluster overlapping onsets
     observations.sort(key=lambda o: (o[0], o[1] or 0, o[2]))
 
-    # Group by (pitch, hand) and merge overlapping onset times
     notes = []
     i = 0
     while i < len(observations):
@@ -585,47 +580,36 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
         group_onsets = [onset]
         group_durs = [dur]
 
+        # Grow cluster: add next observations if they overlap in time
         j = i + 1
+        cluster_end = onset + dur + merge_tolerance
         while j < len(observations):
             p2, h2, on2, dur2 = observations[j]
             if p2 != pitch or h2 != hand:
                 break
-            if on2 - onset < merge_tolerance + dur:
+            if on2 <= cluster_end:
                 group_onsets.append(on2)
                 group_durs.append(dur2)
+                # Extend cluster end if this observation reaches further
+                cluster_end = max(cluster_end, on2 + dur2 + merge_tolerance)
                 j += 1
             else:
                 break
 
-        # Use median onset and max duration from the cluster
+        # Emit note: median onset, median duration (robust to outliers)
         med_onset = float(np.median(group_onsets))
-        max_dur = float(np.max(group_durs))
-        notes.append((pitch, hand, med_onset, med_onset + max_dur))
+        med_dur = float(np.median(group_durs))
+        if med_dur >= min_duration:
+            notes.append((pitch, hand, med_onset, med_onset + med_dur))
 
         i = j
 
-    # Second pass: merge notes that are still close
-    merged = []
-    for pitch, hand, onset, offset in notes:
-        found = False
-        for k in range(len(merged) - 1, max(-1, len(merged) - 40), -1):
-            mp, mh, mon, moff = merged[k]
-            if mp == pitch and mh == hand and abs(onset - moff) < merge_tolerance:
-                merged[k] = (mp, mh, mon, max(moff, offset))
-                found = True
-                break
-            if onset - mon > 5.0:
-                break
-        if not found:
-            merged.append((pitch, hand, onset, offset))
+    notes.sort(key=lambda n: n[2])
 
-    # Filter
-    filtered = [(p, h, on, off) for p, h, on, off in merged
-                if off - on >= min_duration]
-
-    print(f"  Observations: {len(observations)}, clustered: {len(notes)}, "
-          f"merged: {len(merged)}, filtered: {len(filtered)}")
-    return filtered
+    rh = sum(1 for _, h, _, _ in notes if h == 0)
+    lh = sum(1 for _, h, _, _ in notes if h == 1)
+    print(f"  {len(observations)} obs → {len(notes)} notes ({rh} RH, {lh} LH)")
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -787,9 +771,9 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     print(f"\n--- Step 6: Measuring fall speed ---")
     fall_speed = measure_fall_speed(cap, y_min, kb_y)
 
-    # Step 7: Extract notes via scan band
-    print(f"\n--- Step 7: Extracting notes ---")
-    notes = extract_notes_scanband(cap, note_map, kb_y, fall_speed)
+    # Step 7: Extract notes via contour detection + cross-frame merge
+    print(f"\n--- Step 7: Extracting notes (contour) ---")
+    notes = extract_notes_contour(cap, note_map, y_min, kb_y, fall_speed)
 
     # Step 8: BPM
     print(f"\n--- Step 8: BPM detection ---")
