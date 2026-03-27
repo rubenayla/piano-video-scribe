@@ -1,0 +1,22 @@
+{
+  "description": "Falling notes tutorial video, two-hand, red left / blue right, real hands visible on keyboard",
+  "source_url": "https://youtu.be/kvSNAgwa-O8",
+  "style": "falling-notes",
+  "resolution": "1280x720",
+  "fps": 60,
+  "duration_sec": 44.0,
+  "keyboard": {
+    "position": "bottom half of frame, real piano with hands visible",
+    "comment": "Physical keyboard filmed from above, with falling note overlay"
+  },
+  "colors": {
+    "right_hand": "blue",
+    "left_hand": "red",
+    "background": "dark gray with vertical grid lines on white keys"
+  },
+  "falling_notes": {
+    "direction": "top to bottom",
+    "note_shape": "rectangular bars",
+    "comment": "Notes fall from top of frame onto keyboard at bottom. Grid lines align with white keys."
+  }
+}
