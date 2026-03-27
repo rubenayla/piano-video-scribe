@@ -778,7 +778,7 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 
 def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
-                          colors=None, merge_tolerance=0.2, min_duration=0.05,
+                          colors=None, merge_tolerance=0.12, min_duration=0.05,
                           sample_step=3):
     """Extract notes by detecting block contours and projecting onset/duration.
 
@@ -870,18 +870,20 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
         group_onsets = [onset]
         group_durs = [dur]
 
-        # Grow cluster: add next observations if they overlap in time
+        # Grow cluster: merge observations of the SAME block seen across
+        # frames. Chain-merge: each observation must be within tolerance
+        # of the PREVIOUS one (not the first), allowing the cluster to
+        # absorb gradual onset drift while stopping at gaps.
         j = i + 1
-        cluster_end = onset + dur + merge_tolerance
+        last_onset = onset
         while j < len(obs_with_hands):
             p2, h2, on2, dur2 = obs_with_hands[j]
             if p2 != pitch or h2 != hand:
                 break
-            if on2 <= cluster_end:
+            if abs(on2 - last_onset) <= merge_tolerance:
                 group_onsets.append(on2)
                 group_durs.append(dur2)
-                # Extend cluster end if this observation reaches further
-                cluster_end = max(cluster_end, on2 + dur2 + merge_tolerance)
+                last_onset = on2
                 j += 1
             else:
                 break
