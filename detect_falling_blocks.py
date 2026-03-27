@@ -159,10 +159,26 @@ def detect_blocks_in_frame(hsv, y_min, y_max, colors=None):
         for cnt in contours:
             x, y, bw, bh = cv2.boundingRect(cnt)
             area = cv2.contourArea(cnt)
-            if 8 < bw < 55 and bh > 3 and area > 40:
-                cx = x + bw / 2.0
-                y_bot = y + bh + y_min
-                blocks.append((cx, bw, bh, y_bot, color['name']))
+            bbox_area = bw * bh
+            if bbox_area == 0:
+                continue
+            fill_ratio = area / bbox_area
+
+            # Basic size filter
+            if bw < 8 or bw > 55 or bh < 5 or area < 50:
+                continue
+
+            # Shape filter: real falling blocks are tall narrow rectangles.
+            # Reject wide/short shapes (UI elements, progress bars).
+            # For blocks near keyboard (short), allow wider aspect ratios.
+            if bh >= 10 and bw > bh * 3:
+                continue  # Too wide relative to height (UI element)
+            if fill_ratio < 0.5:
+                continue  # Not a solid rectangle
+
+            cx = x + bw / 2.0
+            y_bot = y + bh + y_min
+            blocks.append((cx, bw, bh, y_bot, color['name']))
 
     return blocks
 
@@ -236,12 +252,59 @@ def collect_and_cluster_blocks(cap, y_min, y_max, sample_step=2, colors=None):
 # Step 3: Fit white key grid
 # ---------------------------------------------------------------------------
 
-def fit_white_key_grid(key_positions, width_threshold=25):
+def fit_white_key_grid(key_positions, width_threshold=None):
     """Fit a regular linear grid to white-key positions (wider blocks).
 
     Returns (spacing, offset, n_white_keys, black_positions).
     black_positions is list of (x_center,) for black keys.
     """
+    if width_threshold is None:
+        # Adaptive threshold: find the gap between black-key and white-key
+        # widths. Constraints:
+        # - Black keys are narrower (width ratio ~0.55-0.80 of white keys)
+        # - Count ratio: black/white should be roughly 5/7 ≈ 0.71
+        #   (but can be lower if not all keys are played)
+        # - There should be more white keys than black keys
+        all_widths = sorted(w for _, _, w in key_positions)
+        if len(all_widths) >= 4:
+            best_gap_score = -1
+            best_threshold = 25
+            for i in range(len(all_widths) - 1):
+                gap = all_widths[i+1] - all_widths[i]
+                if gap < 1.0:
+                    continue
+                threshold = (all_widths[i] + all_widths[i+1]) / 2
+                below = [w for w in all_widths if w < threshold]
+                above = [w for w in all_widths if w >= threshold]
+                if len(below) < 1 or len(above) < 3:
+                    continue
+                # White keys should outnumber black keys
+                if len(above) < len(below):
+                    continue
+                mean_below = np.mean(below)
+                mean_above = np.mean(above)
+                width_ratio = mean_below / mean_above
+                count_ratio = len(below) / len(above)
+                # Width ratio: 0.50-0.82 (black keys ~55-75% of white width)
+                if not (0.45 <= width_ratio <= 0.85):
+                    continue
+                # Count ratio: 0.1-1.0 (some pieces don't use all black keys)
+                if not (0.1 <= count_ratio <= 1.0):
+                    continue
+                # Score: prefer gap size, ratio near 0.65, count ratio near 0.71
+                score = (gap
+                         + 2.0 * max(0, 1.0 - abs(width_ratio - 0.65) / 0.2)
+                         + 1.0 * max(0, 1.0 - abs(count_ratio - 0.5) / 0.4))
+                if score > best_gap_score:
+                    best_gap_score = score
+                    best_threshold = threshold
+
+            width_threshold = best_threshold
+        else:
+            width_threshold = 25
+
+    print(f"  White/black width threshold: {width_threshold:.1f}")
+
     whites = [(x, n, w) for x, n, w in key_positions if w >= width_threshold]
     blacks = [(x,) for x, n, w in key_positions if w < width_threshold]
 
@@ -276,11 +339,21 @@ def fit_white_key_grid(key_positions, width_threshold=25):
 # Step 4: Identify C position
 # ---------------------------------------------------------------------------
 
-def identify_c_position(spacing, offset, n_white, black_positions):
-    """Determine which grid index is C by matching black keys to piano layout."""
+def identify_c_position(spacing, offset, n_white, black_positions, base_octave=4):
+    """Determine which grid index is C by matching black keys to piano layout.
+
+    Because the black key pattern repeats every 7 white keys (one octave),
+    multiple C positions may score equally. To disambiguate:
+    1. First, find all candidates with the best black-key match score.
+    2. Among tied candidates, use the grouping pattern of consecutive black
+       keys: real pianos have groups of 2 (C#D#) then 3 (F#G#A#), separated
+       by gaps (E-F and B-C have no sharps).
+    3. If still tied, prefer the C position that places the keyboard center
+       near C4 (typical for Synthesia and tutorial videos).
+    """
     bk_offsets = [0.5, 1.5, 3.5, 4.5, 5.5]  # C# D# F# G# A# in WKW from C
 
-    best_score, best_avg, best_c = -1, 999, 1
+    candidates = []
     for c_idx in range(n_white):
         c_x = c_idx * spacing + offset
         expected = []
@@ -299,10 +372,70 @@ def identify_c_position(spacing, offset, n_white, black_positions):
                     total_dist += d
 
         avg = total_dist / matches if matches else 999
-        if matches > best_score or (matches == best_score and avg < best_avg):
-            best_score, best_avg, best_c = matches, avg, c_idx
+        candidates.append((matches, avg, c_idx))
 
-    print(f"  C at grid index {best_c} ({best_score}/{len(black_positions)} black keys matched)")
+    # Find the best match count
+    best_score = max(c[0] for c in candidates)
+    best_avg = min(c[1] for c in candidates if c[0] == best_score)
+    # Use tolerance for floating-point comparison
+    tied = [c for c in candidates if c[0] == best_score and c[1] - best_avg < 0.5]
+
+    if len(tied) <= 1:
+        best_c = tied[0][2]
+        print(f"  C at grid index {best_c} ({best_score}/{len(black_positions)} "
+              f"black keys matched)")
+        return best_c
+
+    # Disambiguate tied candidates using black key grouping pattern.
+    # The piano's black keys come in groups of 2 and 3. Score each C position
+    # by how well the detected black keys cluster into (2, 3) groups.
+    best_group_score = -1
+    group_scores = {}
+    for _, _, c_idx in tied:
+        c_x = c_idx * spacing + offset
+        # For each detected black key, find its position within the octave
+        positions_in_oct = []
+        for (bk_x,) in black_positions:
+            rel = ((bk_x - c_x) / spacing) % 7
+            positions_in_oct.append(rel)
+
+        # Score: each black key gets a point for being close to an expected
+        # position, plus a bonus for having a neighbor at the right distance
+        score = 0
+        for pos in positions_in_oct:
+            min_d = min(abs(pos - e) for e in bk_offsets)
+            if min_d < 0.35:
+                score += 1
+                # Check for adjacent black key in same group
+                for pos2 in positions_in_oct:
+                    if pos2 != pos:
+                        gap = abs(pos2 - pos)
+                        if gap > 3.5:
+                            gap = 7 - gap  # wrap
+                        if 0.8 < gap < 1.3:
+                            score += 0.5
+
+        group_scores[c_idx] = score
+        if score > best_group_score:
+            best_group_score = score
+
+    # Filter to best group score
+    group_tied = [c for c in tied if group_scores[c[2]] >= best_group_score - 0.1]
+
+    if len(group_tied) == 1:
+        best_c = group_tied[0][2]
+    else:
+        # Final tiebreak: prefer C position that places the keyboard center
+        # near C4 (MIDI 60). For base_octave=4, C4 is at c_idx.
+        # The center of the keyboard is at grid index n_white/2.
+        # We want c_idx such that the center note is near C4-E4.
+        # Center white key index relative to C: n_white/2 - c_idx
+        # This should be a small number (3-5 = E to G above C).
+        mid_idx = n_white / 2.0
+        best_c = min(group_tied, key=lambda t: abs(mid_idx - t[2] - 3.5))[2]
+
+    print(f"  C at grid index {best_c} ({best_score}/{len(black_positions)} "
+          f"black keys matched, {len(tied)} tied, disambiguated)")
     return best_c
 
 
@@ -371,27 +504,80 @@ def build_pitch_map(spacing, offset, n_white, c_idx, black_positions, base_octav
 # ---------------------------------------------------------------------------
 
 def find_keyboard_y(cap):
-    """Find the y-coordinate of the keyboard boundary (dark divider line)."""
+    """Find the y-coordinate where the keyboard top edge starts.
+
+    Uses multiple strategies with voting across frames:
+    1. Look for the first row (scanning downward) where many white-key pixels
+       appear — bright (V>180), low-saturation (S<40) pixels.
+    2. Fall back to a fully dark horizontal line (divider above keyboard).
+
+    Skips early frames which may be title cards. Returns the y-coordinate
+    of the keyboard top edge.
+    """
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
-    # Sample a few frames and find the consistent dark horizontal line
-    for fi in [200, 400, 600]:
-        if fi >= total:
-            continue
+    # Skip early frames (title cards), sample from ~25% onward
+    start_frame = max(100, total // 4)
+    sample_frames = [fi for fi in range(start_frame, total, max(1, total // 8))
+                     if fi < total][:6]
+    if not sample_frames:
+        sample_frames = [total // 2]
+
+    white_key_candidates = []
+    dark_line_candidates = []
+
+    for fi in sample_frames:
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
         ret, frame = cap.read()
         if not ret:
             continue
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Scan from middle down, looking for a fully dark row
-        for y in range(h // 2, h - 10):
+        # Strategy 1: Find where white-key pixels suddenly appear.
+        # Scan from 40% height down to 85% height.
+        # Look for a sharp transition: row N has <5% white-key pixels,
+        # row N+K has >20%. The keyboard top is around that transition.
+        wk_counts = []
+        y_start = int(h * 0.4)
+        y_end = int(h * 0.85)
+        for y in range(y_start, y_end):
+            row = hsv[y, :]
+            wk = int(np.sum((row[:, 1] < 40) & (row[:, 2] > 180)))
+            wk_counts.append((y, wk))
+
+        # Find the first row where wk > 20% of width, with a lookback
+        # confirming that a few rows earlier had < 5%
+        for idx, (y, wk) in enumerate(wk_counts):
+            if wk > w * 0.20:
+                # Check that ~5 rows before had < 5%
+                lookback = max(0, idx - 5)
+                prev_min = min(c for _, c in wk_counts[lookback:idx+1]) if idx > 0 else 0
+                if prev_min < w * 0.05:
+                    white_key_candidates.append(y)
+                    break
+
+        # Strategy 2: Fully dark row (>=90% dark pixels)
+        for y in range(h // 2, int(h * 0.85)):
             row = hsv[y, :]
             dark = int(np.sum(row[:, 2] < 30))
-            if dark > hsv.shape[1] * 0.9:
-                print(f"  Keyboard boundary at y={y}")
-                return y
+            if dark > w * 0.9:
+                dark_line_candidates.append(y)
+                break
+
+    # Prefer white-key detection (finds the actual keyboard top)
+    if white_key_candidates:
+        kb_y = int(np.median(white_key_candidates))
+        print(f"  Keyboard top (white-key onset) at y={kb_y}")
+        return kb_y
+
+    # Fall back to dark line (this finds the divider, which may be
+    # above OR below the keyboard depending on the video layout)
+    if dark_line_candidates:
+        kb_y = int(np.median(dark_line_candidates))
+        print(f"  Keyboard boundary (dark line) at y={kb_y}")
+        return kb_y
 
     # Fallback
     y_default = int(h * 0.62)
@@ -845,7 +1031,11 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     print(f"\n--- Step 1: Finding keyboard boundary ---")
     kb_y = find_keyboard_y(cap)
     y_min = 5
-    y_max = kb_y - 2  # blocks fall to just above the dark line
+    # Add glow margin: keyboard glow extends ~20px above keyboard top.
+    # Also ensure we don't include keyboard pixels.
+    glow_margin = 20
+    y_max = max(y_min + 10, kb_y - glow_margin)
+    print(f"  Keyboard at y={kb_y}, glow margin={glow_margin}px")
     print(f"  Block region: y={y_min}..{y_max}")
 
     # Step 1b: Auto-detect block colors
@@ -853,30 +1043,34 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     colors = auto_detect_colors(cap, y_min, y_max)
     for c in colors:
         print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']})")
-    # Assign hand: higher-hue color is typically blue=LH, lower=green=RH
-    # But this varies — we'll assign hand later based on pitch range
-    hand_names = [c['name'] for c in colors]
 
-    # Step 2: Collect and cluster block positions
-    print(f"\n--- Step 2: Collecting & clustering blocks ---")
-    key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
-    print(f"  {len(key_positions)} discrete keys:")
-    for x, n, mw in key_positions:
-        print(f"    x={x:7.1f}  n={n:4d}  w={mw:5.1f}  "
-              f"{'BLACK' if mw < 25 else 'white'}")
+    # Step 2: Build pitch map
+    # Try keyboard detector first (works on bright Synthesia videos).
+    # Fall back to block-based mapping for dark keyboards.
+    print(f"\n--- Step 2: Building pitch map ---")
+    from pianovideoscribe import detect_keyboard as _detect_kb
+    from pianovideoscribe import build_note_x_map as _build_nxm
+    try:
+        kb_result = _detect_kb(cap, frame_idx=None)
+        wk, bk = kb_result[0], kb_result[1]
+        if len(wk) >= 15:
+            # Bright keyboard detected — use it for pitch mapping
+            note_map = _build_nxm(wk, bk, 21)
+            print(f"  Keyboard detector: {len(wk)} white, {len(bk)} black keys")
+            print(f"  Pitch map: {len(note_map)} notes "
+                  f"(MIDI {min(note_map)}-{max(note_map)})")
+        else:
+            raise ValueError(f"Only {len(wk)} white keys — too few")
+    except Exception as e:
+        print(f"  Keyboard detector failed ({e}), using block-based mapping")
+        key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
+        print(f"  {len(key_positions)} discrete keys")
+        spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
+        c_idx = identify_c_position(spacing, offset, n_white, blacks)
+        note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
+                                   base_octave=base_octave)
+        print(f"  Block-based pitch map: {len(note_map)} notes")
 
-    # Step 3: Fit white key grid
-    print(f"\n--- Step 3: Fitting white key grid ---")
-    spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
-
-    # Step 4: Identify C
-    print(f"\n--- Step 4: Identifying C position ---")
-    c_idx = identify_c_position(spacing, offset, n_white, blacks)
-
-    # Step 5: Build pitch map
-    print(f"\n--- Step 5: Building pitch map ---")
-    note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
-                               base_octave=base_octave)
     for midi in sorted(note_map.keys()):
         print(f"    {midi_to_name(midi):5s} (MIDI {midi:3d}) -> x={note_map[midi]:7.1f}")
 
