@@ -1545,10 +1545,13 @@ Examples:
         with open(args.settings) as f:
             settings = json.load(f)
         SETTINGS_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                         'left_hand', 'start_time', 'end_time', 'config']
+                         'left_hand', 'start_time', 'end_time', 'start_beat', 'config']
         for key in SETTINGS_KEYS:
-            if getattr(args, key) is None and key in settings:
-                setattr(args, key, settings[key])
+            if key in settings:
+                # Only override if the CLI didn't explicitly set it
+                cli_val = getattr(args, key, None)
+                if cli_val is None or (key == 'start_beat' and cli_val == 1.0):
+                    setattr(args, key, settings[key])
 
     # --- Apply hardcoded defaults for anything still None ---
     HARDCODED_DEFAULTS = {
@@ -1888,9 +1891,21 @@ def main():
         left_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 1]
 
         # Quantize each hand with its own quantizer and grid
+        # start_beat shifts onsets so the first note lands on the right beat.
+        # Each hand uses its own first onset as reference, and start_beat
+        # only applies to the RH (melody hand) — LH follows from there.
+        # Compute beat_pre_offset so the RH's first note lands on start_beat.
+        # The RH first onset relative to first_onset may be > 0 if LH starts earlier.
+        rh_first = video_notes[right_indices[0]][2] if right_indices else first_onset
+        rh_rel = rh_first - first_onset  # RH's offset from the global first note
+        beat_target_sec = (args.start_beat - 1.0) * (60.0 / OUT_BPM)
+        beat_pre_offset = beat_target_sec - rh_rel
+        if abs(beat_pre_offset) > 0.001:
+            print(f"  start_beat={args.start_beat}, pre-offset={beat_pre_offset:.4f}s")
+
         def quantize_hand(indices, subdivisions):
-            onsets = [video_notes[i][2] - first_onset for i in indices]
-            offsets = [video_notes[i][3] - first_onset for i in indices]
+            onsets = [video_notes[i][2] - first_onset + beat_pre_offset for i in indices]
+            offsets = [video_notes[i][3] - first_onset + beat_pre_offset for i in indices]
             s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
             if subdivisions == 4:
                 on_g = quantize_onsets_viterbi(onsets, OUT_BPM)
@@ -1908,19 +1923,13 @@ def main():
         r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
         l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
 
-        # Apply --start-beat offset: shift all grid positions so the first
-        # note lands on the specified beat instead of beat 1.
-        beat_offset = args.start_beat - 1.0  # e.g., 1.5 → 0.5 beats
-        r_tick_offset = int(beat_offset * OUT_TPB)
-        l_tick_offset = int(beat_offset * OUT_TPB)
-
         right_events = []
         left_events = []
 
         for j, i in enumerate(right_indices):
             pitch = video_notes[i][0]
-            on_tick = r_on_grid[j] * RIGHT_GRID_TICKS + r_tick_offset
-            off_tick = r_off_grid[j] * RIGHT_GRID_TICKS + r_tick_offset
+            on_tick = r_on_grid[j] * RIGHT_GRID_TICKS
+            off_tick = r_off_grid[j] * RIGHT_GRID_TICKS
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
             right_events.append((on_tick, 'note_on', pitch, 80))
@@ -1928,8 +1937,8 @@ def main():
 
         for j, i in enumerate(left_indices):
             pitch = video_notes[i][0]
-            on_tick = l_on_grid[j] * LEFT_GRID_TICKS + l_tick_offset
-            off_tick = l_off_grid[j] * LEFT_GRID_TICKS + l_tick_offset
+            on_tick = l_on_grid[j] * LEFT_GRID_TICKS
+            off_tick = l_off_grid[j] * LEFT_GRID_TICKS
             on_tick = max(0, on_tick)
             off_tick = max(on_tick + 1, off_tick)
             left_events.append((on_tick, 'note_on', pitch, 80))
