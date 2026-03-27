@@ -777,9 +777,9 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
     return filtered
 
 
-def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
+def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
                           colors=None, merge_tolerance=0.12, min_duration=0.05,
-                          sample_step=3):
+                          sample_step=3, keyboard_y_for_onset=None):
     """Extract notes by detecting block contours and projecting onset/duration.
 
     Each block in each frame independently provides:
@@ -796,6 +796,10 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     px_per_sec = fall_speed * fps
 
+    # keyboard_y_for_onset: the y-coordinate where blocks reach the keyboard.
+    # Used to project block y-position to onset time. Defaults to y_max.
+    onset_ref_y = keyboard_y_for_onset if keyboard_y_for_onset is not None else y_max
+
     # Build x -> pitch mapping with boundaries
     pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
     boundaries = []
@@ -811,6 +815,7 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
         return min(boundaries, key=lambda b: abs(b[3] - cx))[0]
 
     # Phase 1: Collect observations with color names (hand assigned later)
+    # Scan only the top portion (y_min to y_max) — clean, no keyboard glow.
     observations = []  # (pitch, color_name, onset_sec, dur_sec)
 
     for fi in range(0, total, sample_step):
@@ -820,12 +825,13 @@ def extract_notes_contour(cap, note_map, y_min, keyboard_y, fall_speed,
             break
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        blocks = detect_blocks_in_frame(hsv, y_min, keyboard_y, colors=colors)
+        blocks = detect_blocks_in_frame(hsv, y_min, y_max, colors=colors)
 
         t_now = fi / fps
         for cx, bw, bh, y_bot, color_name in blocks:
             pitch = x_to_pitch(cx)
-            onset_sec = t_now + max(0, keyboard_y - y_bot) / px_per_sec
+            # Project onset: how long until this block's bottom reaches keyboard
+            onset_sec = t_now + max(0, onset_ref_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
             observations.append((pitch, color_name, onset_sec, dur_sec))
 
@@ -1033,11 +1039,10 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     print(f"\n--- Step 1: Finding keyboard boundary ---")
     kb_y = find_keyboard_y(cap)
     y_min = 5
-    # Add glow margin: keyboard glow extends ~20px above keyboard top.
-    # Also ensure we don't include keyboard pixels.
-    glow_margin = 20
-    y_max = max(y_min + 10, kb_y - glow_margin)
-    print(f"  Keyboard at y={kb_y}, glow margin={glow_margin}px")
+    # Scan the full waterfall area but exclude a small band near the keyboard
+    # where glow contaminates block detection. 50px margin is enough.
+    y_max = max(y_min + 10, kb_y - 50)
+    print(f"  Keyboard at y={kb_y}")
     print(f"  Block region: y={y_min}..{y_max}")
 
     # Step 1b: Auto-detect block colors
@@ -1082,7 +1087,8 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
 
     # Step 7: Extract notes via contour detection + cross-frame merge
     print(f"\n--- Step 7: Extracting notes (contour) ---")
-    notes = extract_notes_contour(cap, note_map, y_min, kb_y, fall_speed)
+    notes = extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
+                                  colors=colors, keyboard_y_for_onset=kb_y)
 
     # Step 8: BPM
     print(f"\n--- Step 8: BPM detection ---")
