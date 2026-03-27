@@ -22,15 +22,20 @@ from score import extract_notes, match_notes, f1_score, align_times
 # Test configs: videos with ground truth that the falling blocks detector
 # should be able to handle. Start with synthetic (midi2video) tests for
 # guaranteed-correct GT, then add real videos as quality improves.
+# RELIABLE TEST DATA: These videos were rendered by midi2video directly from
+# the ground truth MIDI files. The GT is 100% correct by construction —
+# the MIDI IS the source that generated the video. Any mismatch is a
+# detector bug, not a GT issue.
+#
+# The detector must figure out how to read the video correctly regardless
+# of keyboard layout, block positions, colors, etc.
 TESTS = [
-    # Start with the simplest test — fast to run, easy to debug.
-    # Add harder tests once this reaches 100%.
     {
         "name": "test11 (midi2video, scale+chords, 21 notes)",
         "video": "tests/test11/video.mp4",
         "gt": "tests/test11/ground_truth.mid",
     },
-    # Uncomment when test11 reaches 100%:
+    # Add test12 once test11 reaches 95%+:
     # {
     #     "name": "test12 (midi2video, End of Beginning, 401 notes)",
     #     "video": "tests/test12/video.mp4",

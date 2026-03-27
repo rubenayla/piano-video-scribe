@@ -224,12 +224,24 @@ def collect_and_cluster_blocks(cap, y_min, y_max, sample_step=2, colors=None):
                 and smoothed[i] > 3):
             peaks.append(((edges[i] + edges[i + 1]) / 2, smoothed[i]))
 
-    # Merge close peaks
+    # Merge close peaks, but only if they have similar widths.
+    # A narrow peak (black key ~22px) next to a wide peak (white key ~30px)
+    # should NOT be merged — they're different keys.
     merged = []
     for px, ps in sorted(peaks):
         if merged and px - merged[-1][0] < 12:
-            if ps > merged[-1][1]:
-                merged[-1] = (px, ps)
+            # Check widths: get median width for each peak's blocks
+            mask_new = np.abs(xs - px) < 8
+            mask_old = np.abs(xs - merged[-1][0]) < 8
+            w_new = float(np.median(ws[mask_new])) if np.sum(mask_new) >= 3 else 30
+            w_old = float(np.median(ws[mask_old])) if np.sum(mask_old) >= 3 else 30
+            # Only merge if both are similar width (within 30%)
+            if min(w_new, w_old) / max(w_new, w_old) > 0.7:
+                if ps > merged[-1][1]:
+                    merged[-1] = (px, ps)
+            else:
+                # Different widths = different keys, keep both
+                merged.append((px, ps))
         else:
             merged.append((px, ps))
 
@@ -1054,32 +1066,45 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     for c in colors:
         print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']})")
 
-    # Step 2: Build pitch map
-    # Try keyboard detector first (works on bright Synthesia videos).
-    # Fall back to block-based mapping for dark keyboards.
+    # Step 2: Build pitch map.
+    # Try block-based first (uses actual block positions, most accurate).
+    # Fall back to keyboard detector if not enough blocks for a grid fit.
     print(f"\n--- Step 2: Building pitch map ---")
-    from pianovideoscribe import detect_keyboard as _detect_kb
-    from pianovideoscribe import build_note_x_map as _build_nxm
-    try:
-        kb_result = _detect_kb(cap, frame_idx=None)
-        wk, bk = kb_result[0], kb_result[1]
-        if len(wk) >= 15:
-            # Bright keyboard detected — use it for pitch mapping
+    key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
+    print(f"  {len(key_positions)} discrete keys")
+
+    note_map = None
+    if len(key_positions) >= 15:
+        try:
+            spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
+            c_idx = identify_c_position(spacing, offset, n_white, blacks)
+            note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
+                                       base_octave=base_octave)
+            print(f"  Block-based pitch map: {len(note_map)} notes")
+        except Exception as e:
+            print(f"  Block-based mapping failed: {e}")
+
+    if note_map is None:
+        # Fall back to keyboard detector + offset correction
+        print(f"  Too few block positions, using keyboard detector")
+        from pianovideoscribe import detect_keyboard as _detect_kb
+        from pianovideoscribe import build_note_x_map as _build_nxm
+        try:
+            kb_result = _detect_kb(cap, frame_idx=None)
+            wk, bk = kb_result[0], kb_result[1]
             note_map = _build_nxm(wk, bk, 21)
             print(f"  Keyboard detector: {len(wk)} white, {len(bk)} black keys")
+
             print(f"  Pitch map: {len(note_map)} notes "
                   f"(MIDI {min(note_map)}-{max(note_map)})")
-        else:
-            raise ValueError(f"Only {len(wk)} white keys — too few")
-    except Exception as e:
-        print(f"  Keyboard detector failed ({e}), using block-based mapping")
-        key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
-        print(f"  {len(key_positions)} discrete keys")
-        spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
-        c_idx = identify_c_position(spacing, offset, n_white, blacks)
-        note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
-                                   base_octave=base_octave)
-        print(f"  Block-based pitch map: {len(note_map)} notes")
+        except Exception as e:
+            print(f"  Keyboard detector failed: {e}")
+            note_map = {}
+
+    if not note_map:
+        print("  ERROR: No pitch map available", file=sys.stderr)
+        cap.release()
+        return []
 
     for midi in sorted(note_map.keys()):
         print(f"    {midi_to_name(midi):5s} (MIDI {midi:3d}) -> x={note_map[midi]:7.1f}")
