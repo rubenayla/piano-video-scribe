@@ -799,7 +799,7 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
                           colors=None, merge_tolerance=0.06, min_duration=0.05,
-                          sample_step=3, keyboard_y_for_onset=None):
+                          sample_step=None, keyboard_y_for_onset=None):
     """Extract notes by detecting block contours and projecting onset/duration.
 
     Each block in each frame independently provides:
@@ -815,6 +815,19 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     px_per_sec = fall_speed * fps
+
+    # Adaptive sample step: each block needs ~10 observations to merge
+    # reliably. A block is visible for fall_time frames. Sample every
+    # fall_time/10 frames to get 10 obs per block. Cap at step=10 to
+    # keep merge_tolerance reasonable.
+    if sample_step is None:
+        visible_height = y_max - y_min
+        fall_time_frames = visible_height / max(0.1, fall_speed)
+        sample_step = max(1, min(10, int(fall_time_frames / 10)))
+        merge_tolerance = max(0.06, 0.02 * sample_step)
+        n_frames = total // sample_step
+        print(f"  Sample step: {sample_step} frames ({n_frames} frames, "
+              f"merge_tol={merge_tolerance:.2f}s)")
 
     # keyboard_y_for_onset: the y-coordinate where blocks reach the keyboard.
     # Used to project block y-position to onset time. Defaults to y_max.
