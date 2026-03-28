@@ -1199,19 +1199,31 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     print(f"  {len(key_positions)} discrete keys")
 
     note_map = None
+    use_block_based = False
     if len(key_positions) >= 15:
         try:
             spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
-            c_idx = identify_c_position(spacing, offset, n_white, blacks)
-            note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
-                                       base_octave=base_octave)
-            print(f"  Block-based pitch map: {len(note_map)} notes")
+            # Only use block-based mapping if we have enough black keys
+            # for reliable C identification (need at least 5 black keys
+            # per octave span to avoid ambiguous identification)
+            n_blacks = len(blacks)
+            n_octaves = max(1, n_white / 7.0)
+            blacks_per_octave = n_blacks / n_octaves
+            if blacks_per_octave >= 2.0:
+                c_idx = identify_c_position(spacing, offset, n_white, blacks)
+                note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
+                                           base_octave=base_octave)
+                use_block_based = True
+                print(f"  Block-based pitch map: {len(note_map)} notes")
+            else:
+                print(f"  Too few black keys ({n_blacks} across {n_octaves:.1f} octaves, "
+                      f"{blacks_per_octave:.1f}/oct) for reliable C identification")
         except Exception as e:
             print(f"  Block-based mapping failed: {e}")
 
     if note_map is None:
         # Fall back to keyboard detector + offset correction
-        print(f"  Too few block positions, using keyboard detector")
+        print(f"  Using keyboard detector for pitch map")
         from pianovideoscribe import detect_keyboard as _detect_kb
         from pianovideoscribe import build_note_x_map as _build_nxm
         try:
