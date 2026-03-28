@@ -1223,6 +1223,10 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
             print(f"  Pitch map: {len(note_map)} notes "
                   f"(MIDI {min(note_map)}-{max(note_map)})")
 
+            # Calibrate note_map using block positions
+            if len(key_positions) >= 3:
+                note_map = _calibrate_note_map_with_blocks(
+                    note_map, key_positions)
 
         except Exception as e:
             print(f"  Keyboard detector failed: {e}")
