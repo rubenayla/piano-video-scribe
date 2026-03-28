@@ -921,7 +921,7 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
         # several blocks of the same pitch are visible simultaneously.
         j = i + 1
         last_onset = onset
-        max_span = dur + 0.2  # a single block's duration + margin
+        max_span = dur + 0.1  # a single block's duration + small margin
         while j < len(obs_with_hands):
             p2, h2, on2, dur2 = obs_with_hands[j]
             if p2 != pitch or h2 != hand:
