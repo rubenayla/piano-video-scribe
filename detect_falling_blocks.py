@@ -936,7 +936,7 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
 
         # Emit note: use 25th percentile of onsets (reduces bias from
         # merged contours that inflate onset times), median duration
-        med_onset = float(np.percentile(group_onsets, 35))
+        med_onset = float(np.percentile(group_onsets, 25))
         med_dur = float(np.median(group_durs))
         if med_dur >= min_duration:
             notes.append((pitch, hand, med_onset, med_onset + med_dur))
