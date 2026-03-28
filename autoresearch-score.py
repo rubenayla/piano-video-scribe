@@ -35,12 +35,11 @@ TESTS = [
         "video": "tests/test11/video.mp4",
         "gt": "tests/test11/ground_truth.mid",
     },
-    # Add test12 once test11 reaches 95%+:
-    # {
-    #     "name": "test12 (midi2video, End of Beginning, 401 notes)",
-    #     "video": "tests/test12/video.mp4",
-    #     "gt": "tests/test12/ground_truth.mid",
-    # },
+    {
+        "name": "test12 (midi2video, End of Beginning, 401 notes)",
+        "video": "tests/test12/video.mp4",
+        "gt": "tests/test12/ground_truth.mid",
+    },
 ]
 
 
