@@ -1274,9 +1274,15 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     fall_speed = measure_fall_speed(cap, y_min, kb_y)
 
     # Step 7: Extract notes via contour detection + cross-frame merge
+    # The keyboard top detected by find_keyboard_y is where white-key pixels
+    # first appear. But blocks actually trigger (onset) a few pixels below,
+    # where they visually meet the keyboard. Add an onset_y_margin to shift
+    # the onset reference point downward for more accurate onset timing.
+    onset_y_margin = int(fall_speed * fps * 0.07)  # ~0.07s worth of pixels
     print(f"\n--- Step 7: Extracting notes (contour) ---")
     notes = extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
-                                  colors=colors, keyboard_y_for_onset=kb_y)
+                                  colors=colors,
+                                  keyboard_y_for_onset=kb_y + onset_y_margin)
 
     # Step 8: BPM
     print(f"\n--- Step 8: BPM detection ---")
