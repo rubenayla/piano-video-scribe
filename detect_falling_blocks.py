@@ -1040,8 +1040,7 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
     The keyboard detector and the falling blocks may use slightly different
     x-coordinate scales (e.g., keyboard keys at 26px spacing, blocks at 25px).
     This finds the best affine transform by matching block positions to
-    white-key positions using a monotonic assignment that minimizes total
-    squared distance.
+    note positions (both white AND black keys).
 
     Args:
         note_map: dict {midi_note: x_position} from keyboard detector
@@ -1052,7 +1051,11 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
     """
     block_xs = sorted([x for x, _, _ in key_positions])
 
-    # Get white key positions from note_map (semitone 0,2,4,5,7,9,11)
+    # Use ALL note positions (white + black) for matching
+    all_notes = sorted(note_map.items(), key=lambda kv: kv[1])
+    all_xs = np.array([x for _, x in all_notes])
+
+    # Also get white-key-only positions for the anchor fitting
     white_semitones = {0, 2, 4, 5, 7, 9, 11}
     white_notes = sorted([(midi, x) for midi, x in note_map.items()
                           if midi % 12 in white_semitones],
@@ -1060,82 +1063,71 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
     white_xs = np.array([x for _, x in white_notes])
 
     n_blocks = len(block_xs)
-    n_whites = len(white_xs)
+    n_all = len(all_xs)
 
-    # The block spacing
-    block_diffs = np.diff(block_xs)
-    block_spacing = float(np.min(block_diffs[block_diffs > 5])) if len(block_diffs) > 0 else 25
-
-    # The white key spacing on the keyboard
+    # Estimate keyboard spacing from white keys
     white_diffs = np.diff(white_xs)
     white_spacing = float(np.median(white_diffs))
 
-    print(f"  Calibration: {n_blocks} blocks, spacing≈{block_spacing:.1f}px; "
-          f"{n_whites} white keys, spacing≈{white_spacing:.1f}px")
+    print(f"  Calibration: {n_blocks} blocks; "
+          f"{len(white_notes)} white + {n_all - len(white_notes)} black keys, "
+          f"spacing≈{white_spacing:.1f}px")
 
-    # Strategy: compute the spacing ratio (block/keyboard), then for each
-    # possible assignment of the first block to a white key, compute how
-    # well all blocks match white keys after applying a linear transform.
-    # The transform is: block_x = scale * kb_x + offset
-    # where scale ≈ block_spacing / white_spacing
-
-    # For each candidate scale (near the ratio), and for each possible
-    # first-block assignment, compute total matching error.
-    scale_ratio = block_spacing / white_spacing
-
+    # Strategy: try different affine transforms and match each block to
+    # its nearest note (white or black). Use pairs of blocks as anchors.
     best_score = float('inf')
     best_a, best_b = 1.0, 0.0
     best_pairs = None
 
-    # Try assigning the first block to each white key
-    for first_wi in range(n_whites):
-        # Compute affine: first_block_x = a * white_xs[first_wi] + b
-        # We also need another point. Use the last block.
-        # Try assigning the last block to different white keys.
-        for last_wi in range(first_wi + n_blocks - 1,
-                             min(first_wi + n_blocks + 10, n_whites)):
-            # Affine from (white_xs[first_wi], block_xs[0]) and
-            #             (white_xs[last_wi], block_xs[-1])
-            kx0, kx1 = white_xs[first_wi], white_xs[last_wi]
-            bx0, bx1 = block_xs[0], block_xs[-1]
-            if abs(kx1 - kx0) < 1:
+    # For efficiency, only use a subset of block pairs as anchors
+    # Use first block + each other block to define the affine transform
+    for anchor_i in range(min(n_blocks, 5)):
+        for anchor_j in range(max(anchor_i + 1, n_blocks - 5), n_blocks):
+            bx0, bx1 = block_xs[anchor_i], block_xs[anchor_j]
+            if abs(bx1 - bx0) < 50:
                 continue
-            a = (bx1 - bx0) / (kx1 - kx0)
-            b = bx0 - a * kx0
+            # Try matching these two blocks to different notes
+            # Find candidate notes near each block position
+            for ni in range(n_all):
+                kx0 = all_xs[ni]
+                if abs(kx0 - bx0) > white_spacing * 2:
+                    continue
+                for nj in range(ni + 1, n_all):
+                    kx1 = all_xs[nj]
+                    if abs(kx1 - bx1) > white_spacing * 2:
+                        continue
+                    if abs(kx1 - kx0) < 1:
+                        continue
+                    a = (bx1 - bx0) / (kx1 - kx0)
+                    b_val = bx0 - a * kx0
+                    if not (0.85 <= a <= 1.15):
+                        continue
 
-            # Check that scale is reasonable (0.90 to 1.10)
-            if not (0.85 <= a <= 1.15):
-                continue
+                    # Match each block to nearest note after transform
+                    transformed = a * all_xs + b_val
+                    pairs = []
+                    total_err = 0.0
+                    matched_indices = set()
+                    for bx in block_xs:
+                        dists = np.abs(transformed - bx)
+                        best_j = int(np.argmin(dists))
+                        d = float(dists[best_j])
+                        total_err += d * d
+                        pairs.append((all_xs[best_j], bx, all_notes[best_j][0], d))
+                        matched_indices.add(best_j)
 
-            # For each block, find nearest white key after transform
-            pairs = []
-            total_err = 0.0
-            for bx in block_xs:
-                # Find the white key whose transformed position is closest
-                transformed = a * white_xs + b
-                dists = np.abs(transformed - bx)
-                best_j = int(np.argmin(dists))
-                d = float(dists[best_j])
-                total_err += d * d
-                pairs.append((white_xs[best_j], bx, white_notes[best_j][0], d))
+                    # All blocks should match different notes
+                    if len(matched_indices) < n_blocks:
+                        continue
 
-            # Check that all blocks matched to different white keys
-            matched_indices = [int(np.argmin(np.abs(a * white_xs + b - bx)))
-                               for bx in block_xs]
-            if len(set(matched_indices)) < n_blocks:
-                continue  # Some blocks mapped to the same key
+                    # Penalize transforms far from identity
+                    identity_penalty = 1000 * (a - 1.0) ** 2 + 0.1 * b_val ** 2
+                    score = total_err + identity_penalty
 
-            # Penalize transforms far from identity (a=1, b=0).
-            # The blocks and keyboard should be close to the same scale,
-            # just with a small systematic offset. Large transforms likely
-            # indicate wrong assignment.
-            identity_penalty = 1000 * (a - 1.0) ** 2 + 0.1 * b ** 2
-            score = total_err + identity_penalty
-
-            if score < best_score:
-                best_score = score
-                best_a, best_b = a, b
-                best_pairs = pairs
+                    if score < best_score:
+                        best_score = score
+                        best_a, best_b = a, b_val
+                        best_pairs = pairs
 
     if best_pairs is None:
         print(f"  Calibration: no good match found, keeping original")
