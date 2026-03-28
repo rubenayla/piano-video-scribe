@@ -813,12 +813,29 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
     # Used to project block y-position to onset time. Defaults to y_max.
     onset_ref_y = keyboard_y_for_onset if keyboard_y_for_onset is not None else y_max
 
-    # Build x -> pitch mapping with boundaries
+    # Build x -> pitch mapping with boundaries.
+    # First, deduplicate notes with nearly identical x-positions (< 5px apart).
+    # When the keyboard detector places a black key at almost the same x as a
+    # white key, the boundary between them is unreliable. Keep the white key.
+    white_semitones_set = {0, 2, 4, 5, 7, 9, 11}
     pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
+    deduped = []
+    for midi, x in pitches_sorted:
+        if deduped and abs(x - deduped[-1][1]) < 5:
+            # Keep whichever is a white key, or if both same type, keep first
+            prev_midi = deduped[-1][0]
+            prev_is_white = prev_midi % 12 in white_semitones_set
+            curr_is_white = midi % 12 in white_semitones_set
+            if curr_is_white and not prev_is_white:
+                deduped[-1] = (midi, x)
+            # else keep previous (either both white or prev is white)
+        else:
+            deduped.append((midi, x))
+
     boundaries = []
-    for i, (midi, x) in enumerate(pitches_sorted):
-        x_lo = (pitches_sorted[i - 1][1] + x) / 2.0 if i > 0 else x - 20
-        x_hi = (x + pitches_sorted[i + 1][1]) / 2.0 if i < len(pitches_sorted) - 1 else x + 20
+    for i, (midi, x) in enumerate(deduped):
+        x_lo = (deduped[i - 1][1] + x) / 2.0 if i > 0 else x - 20
+        x_hi = (x + deduped[i + 1][1]) / 2.0 if i < len(deduped) - 1 else x + 20
         boundaries.append((midi, x_lo, x_hi, x))
 
     def x_to_pitch(cx):
