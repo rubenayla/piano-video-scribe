@@ -603,9 +603,16 @@ def measure_fall_speed(cap, y_min, y_max):
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     speeds = []
 
-    for fi in [200, 300, 400, 500, 600, 700, 800]:
-        if fi >= total - 20:
-            continue
+    # Sample throughout the video, not just early frames
+    sample_frames = list(range(200, min(total - 20, 900), 100))
+    # Add samples from later in the video
+    for frac in [0.15, 0.25, 0.35, 0.50, 0.65, 0.75, 0.85]:
+        fi = int(total * frac)
+        if fi not in sample_frames and fi < total - 20:
+            sample_frames.append(fi)
+    sample_frames.sort()
+
+    for fi in sample_frames:
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
         ret, f1 = cap.read()
         if not ret:
@@ -628,7 +635,7 @@ def measure_fall_speed(cap, y_min, y_max):
                         speeds.append(dy / 10.0)
 
     speed = float(np.median(speeds)) if speeds else 2.7
-    print(f"  Fall speed: {speed:.2f} px/frame")
+    print(f"  Fall speed: {speed:.2f} px/frame ({len(speeds)} measurements)")
     return speed
 
 
