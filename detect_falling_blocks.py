@@ -155,9 +155,10 @@ def detect_blocks_in_frame(hsv, y_min, y_max, colors=None):
     for ci, color in enumerate(colors):
         mask = make_color_mask(region, color).astype(np.uint8) * 255
         # Erode horizontally to separate adjacent blocks that touch.
-        # A 3x1 kernel removes 1px from each side, breaking thin bridges
-        # between blocks on neighboring keys while preserving block height.
-        erode_kernel = np.ones((1, 3), dtype=np.uint8)
+        # A 5x1 kernel removes 2px from each side, breaking bridges
+        # between blocks on neighboring keys (e.g. C#5/D5 stacked
+        # vertically in midi2video) while preserving block height.
+        erode_kernel = np.ones((1, 5), dtype=np.uint8)
         mask = cv2.erode(mask, erode_kernel, iterations=1)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
