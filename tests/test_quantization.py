@@ -140,6 +140,88 @@ def test_naive_quantize_baseline():
     assert score > 50
 
 
+# ---------------------------------------------------------------------------
+# Adaptive quantizer tests
+# ---------------------------------------------------------------------------
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from pianovideoscribe import (
+    quantize_onsets_viterbi,
+    quantize_onsets_adaptive,
+)
+
+
+def apply_tempo_drift(onsets, grid_positions, nominal_bpm, drift_rate):
+    """Warp constant-BPM onsets as if tempo drifts linearly.
+
+    drift_rate: BPM change per second (e.g., 0.25 = +1 BPM over 4 seconds)
+    """
+    result = [0.0]
+    for i in range(1, len(onsets)):
+        grid_step = grid_positions[i] - grid_positions[i - 1]
+        actual_bpm = nominal_bpm + drift_rate * result[-1]
+        s_actual = 60.0 / actual_bpm / 4
+        result.append(result[-1] + grid_step * s_actual)
+    return result
+
+
+def test_adaptive_handles_drift():
+    """Adaptive quantizer should recover correct grid under gradual BPM drift."""
+    bpm = 90
+    drifted = apply_tempo_drift(RAW_ONSETS_8THS, EXPECTED_GRID_8THS, bpm, 0.25)
+    result = quantize_onsets_adaptive(drifted, bpm)
+    assert result == EXPECTED_GRID_8THS, (
+        f"Adaptive failed on drifted 8ths: {result} != {EXPECTED_GRID_8THS}"
+    )
+
+
+def test_adaptive_ignores_triplets():
+    """Adaptive should not mistake rhythmic variation for tempo drift."""
+    bpm = 90
+    s = 60.0 / bpm / 4  # 16th note duration
+
+    # Build onsets: 4 8ths, then a triplet (3 notes in 2 8ths), then 4 more 8ths
+    onsets = [0.0]
+    expected = [0]
+    for i in range(1, 5):
+        onsets.append(i * 2 * s)
+        expected.append(i * 2)
+    # 3 notes in the space of 2 8ths (triplet-like)
+    base = onsets[-1]
+    triplet_dur = 2 * s / 3
+    onsets.append(base + triplet_dur)
+    expected.append(11)
+    onsets.append(base + 2 * triplet_dur)
+    expected.append(12)
+    # 4 more 8ths after the triplet section
+    resume = base + 2 * 2 * s
+    for i in range(4):
+        onsets.append(resume + i * 2 * s)
+        expected.append(14 + i * 2)
+
+    result_adaptive = quantize_onsets_adaptive(onsets, bpm)
+    result_viterbi = quantize_onsets_viterbi(onsets, bpm)
+    assert result_adaptive == result_viterbi, (
+        f"Adaptive diverged from Viterbi on triplet pattern: "
+        f"{result_adaptive} != {result_viterbi}"
+    )
+
+
+def test_adaptive_regression_constant_tempo():
+    """With constant tempo, adaptive must match Viterbi exactly."""
+    bpm = 90
+    for case_name, onsets, expected in TEST_CASES:
+        t0 = onsets[0]
+        shifted = [t - t0 for t in onsets]
+        result_adaptive = quantize_onsets_adaptive(shifted, bpm)
+        result_viterbi = quantize_onsets_viterbi(shifted, bpm)
+        assert result_adaptive == result_viterbi, (
+            f"[{case_name}] Adaptive != Viterbi at constant tempo: "
+            f"{result_adaptive} != {result_viterbi}"
+        )
+
+
 if __name__ == "__main__":
     print("=== Naive round-to-nearest-16th baseline ===")
     score = run_quantization_test(_naive_quantize, bpm=90)

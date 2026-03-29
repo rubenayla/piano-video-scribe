@@ -1198,6 +1198,101 @@ def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
     return positions
 
 
+def estimate_local_bpm(onset_secs, grid_positions, nominal_bpm):
+    """Estimate a smooth per-note BPM curve from Viterbi grid positions.
+
+    Uses median filtering + rate limiting to reject rhythmic patterns
+    (triplets, syncopation) while following gradual tempo drift.
+    """
+    import statistics
+    n = len(onset_secs)
+    if n < 2:
+        return [nominal_bpm] * n
+
+    s = 60.0 / nominal_bpm / 4  # nominal 16th duration
+
+    # Compute implied BPM from each interval
+    raw_bpms = [nominal_bpm]  # first note has no prior interval
+    for i in range(1, n):
+        interval = onset_secs[i] - onset_secs[i - 1]
+        grid_step = grid_positions[i] - grid_positions[i - 1]
+        # Skip chords (zero interval) and large gaps (rests)
+        if interval < 1e-6 or grid_step <= 0 or interval > 2.5 * grid_step * s:
+            raw_bpms.append(nominal_bpm)
+        else:
+            raw_bpms.append(grid_step * 15.0 / interval)
+
+    # Median filter (window=7) to remove outlier BPM values
+    WINDOW = 7
+    half = WINDOW // 2
+    filtered = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        filtered.append(statistics.median(raw_bpms[lo:hi]))
+
+    # Rate limiter: clamp BPM change per note
+    # Max ~0.5% per beat; convert to per-note using median grid step
+    median_step = statistics.median(
+        max(1, grid_positions[i] - grid_positions[i - 1])
+        for i in range(1, n)
+    ) if n > 1 else 4
+    max_delta = 0.005 * nominal_bpm * median_step / 4  # per note
+    limited = [filtered[0]]
+    for i in range(1, n):
+        prev = limited[-1]
+        clamped = max(prev - max_delta, min(prev + max_delta, filtered[i]))
+        limited.append(clamped)
+
+    return limited
+
+
+def warp_onsets(onset_secs, local_bpms, nominal_bpm):
+    """Warp onset times to compensate for tempo drift.
+
+    Transforms onsets so that under constant nominal_bpm, the Viterbi
+    quantizer sees the same relative spacing as the actual notes under
+    the variable tempo.  Identity when local_bpms == nominal_bpm everywhere.
+    """
+    n = len(onset_secs)
+    if n == 0:
+        return []
+    warped = [onset_secs[0]]
+    for i in range(1, n):
+        dt = onset_secs[i] - onset_secs[i - 1]
+        avg_bpm = (local_bpms[i - 1] + local_bpms[i]) / 2
+        warped.append(warped[-1] + dt * avg_bpm / nominal_bpm)
+    return warped
+
+
+def quantize_onsets_adaptive(onset_secs, bpm, abs_weight=0.1, drift_threshold=0.3):
+    """Two-pass adaptive quantizer: handles gradual BPM drift.
+
+    Pass 1: standard Viterbi with nominal BPM to get grid positions.
+    Pass 2: estimate local BPM curve, warp onsets, re-run Viterbi.
+
+    Rate-limited BPM tracking ensures rhythmic patterns (triplets,
+    syncopation) don't cause false tempo adjustments.
+    """
+    n = len(onset_secs)
+    if n < 4:
+        return quantize_onsets_viterbi(onset_secs, bpm, abs_weight)
+
+    # Pass 1: initial quantization
+    grid_positions = quantize_onsets_viterbi(onset_secs, bpm, abs_weight)
+
+    # Estimate smooth local BPM curve
+    local_bpms = estimate_local_bpm(onset_secs, grid_positions, bpm)
+
+    # Short-circuit if no significant drift detected
+    if max(local_bpms) - min(local_bpms) < drift_threshold:
+        return grid_positions
+
+    # Pass 2: warp onsets and re-quantize
+    warped = warp_onsets(onset_secs, local_bpms, bpm)
+    return quantize_onsets_viterbi(warped, bpm, abs_weight)
+
+
 # ---------------------------------------------------------------------------
 # Summary image
 # ---------------------------------------------------------------------------
@@ -1926,7 +2021,7 @@ def main():
             hand_t0 = rep_onsets[0]
             rep_onsets_shifted = [t - hand_t0 for t in rep_onsets]
             if subdivisions == 4:
-                rep_grid = quantize_onsets_viterbi(rep_onsets_shifted, OUT_BPM)
+                rep_grid = quantize_onsets_adaptive(rep_onsets_shifted, OUT_BPM)
             else:
                 rep_grid = quantize_onsets_pll(rep_onsets_shifted, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
 
