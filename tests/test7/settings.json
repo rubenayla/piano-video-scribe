@@ -5,5 +5,7 @@
   "frame": 400,
   "right_hand": "no-overlap",
   "left_hand": "no-overlap",
-  "config": "tests/test7/config.json"
+  "config": "tests/test7/config.json",
+  "transpose": 0,
+  "detector": "keys"
 }

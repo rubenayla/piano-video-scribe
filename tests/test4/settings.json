@@ -5,5 +5,7 @@
   "frame": 80,
   "right_hand": "monophonic",
   "left_hand": "no-overlap",
-  "config": "configs/synthesia_cyan_blue.json"
+  "config": "configs/synthesia_cyan_blue.json",
+  "transpose": 0,
+  "detector": "keys"
 }

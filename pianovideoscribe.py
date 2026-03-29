@@ -1595,8 +1595,8 @@ Examples:
                    help='Use combined grid (12 per beat) that supports both straight 16ths '
                         'and triplet positions. Each note snaps to the nearest valid position.')
     p.add_argument('--detector', choices=['keys', 'falling-blocks'], default=None,
-                   help='Note detection method: keys (default, key-lighting saturation) or '
-                        'falling-blocks (detect notes from falling colored blocks above keyboard)')
+                   help='Note detection method: falling-blocks (default, detects notes from '
+                        'falling colored blocks) or keys (key-lighting saturation fallback)')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
 
@@ -1622,7 +1622,7 @@ Examples:
         'green_hand': 'right',
         'right_hand': 'no-overlap',
         'left_hand': 'no-overlap',
-        'detector': 'keys',
+        'detector': 'falling-blocks',
     }
     for key, default in HARDCODED_DEFAULTS.items():
         if getattr(args, key) is None:
@@ -2257,7 +2257,7 @@ def main():
             # Skip defaults that don't need saving
             if key == 'start_beat' and val is None:
                 continue
-            if key == 'detector' and val == 'keys':
+            if key == 'detector' and val == 'falling-blocks':
                 continue
             settings_to_save[key] = val
     settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')
