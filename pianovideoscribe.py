@@ -1314,71 +1314,6 @@ def generate_summary_image(cap, frame_idx, white_keys, black_keys, y_white,
 # ---------------------------------------------------------------------------
 
 # Major scale intervals (semitones from root): W W H W W W H
-_MAJOR_SCALE = {0, 2, 4, 5, 7, 9, 11}
-
-
-def _scale_pitches(key_str):
-    """Return the set of pitch classes (0-11) that belong to the given key.
-
-    key_str: e.g. 'G' (G major), 'Em' (E minor), 'Bb' (Bb major), 'F#m'.
-    """
-    NOTE_TO_PC = {
-        'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
-        'E': 4, 'Fb': 4, 'F': 5, 'E#': 5, 'F#': 6, 'Gb': 6,
-        'G': 7, 'G#': 8, 'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10,
-        'B': 11, 'Cb': 11,
-    }
-    minor = key_str.endswith('m')
-    tonic_str = key_str[:-1] if minor else key_str
-    root = NOTE_TO_PC.get(tonic_str, 0)
-    if minor:
-        # Natural minor = major scale starting 3 semitones up
-        rel_major_root = (root + 3) % 12
-    else:
-        rel_major_root = root
-    return {(rel_major_root + s) % 12 for s in _MAJOR_SCALE}
-
-
-def _snap_to_key(key_sig, right_events, left_events):
-    """Snap out-of-key note pitches to the nearest in-key pitch.
-
-    Corrects boundary detection errors (e.g. C# detected instead of C in G major).
-    Only modifies notes whose pitch class is not in the key's scale.
-    """
-    scale = _scale_pitches(key_sig)
-    snapped = 0
-
-    def snap_events(events):
-        nonlocal snapped
-        out = []
-        for ev in events:
-            tick, ev_type, pitch, vel = ev
-            if ev_type in ('note_on', 'note_off'):
-                pc = pitch % 12
-                if pc not in scale:
-                    # Try ±1 semitone; prefer the one that's in-key
-                    down, up = pitch - 1, pitch + 1
-                    down_in = (down % 12) in scale
-                    up_in = (up % 12) in scale
-                    if down_in and not up_in:
-                        new_pitch = down
-                    elif up_in and not down_in:
-                        new_pitch = up
-                    else:
-                        # Both or neither in scale — prefer downward (flat)
-                        new_pitch = down if down_in else pitch
-                    if new_pitch != pitch:
-                        if ev_type == 'note_on':
-                            snapped += 1
-                        pitch = new_pitch
-            out.append((tick, ev_type, pitch, vel))
-        return out
-
-    right_events = snap_events(right_events)
-    left_events = snap_events(left_events)
-    if snapped:
-        print(f"Snapped {snapped} out-of-key notes to nearest scale tone ({key_sig})")
-    return right_events, left_events
 
 
 def remove_overlaps(events):
@@ -1541,9 +1476,8 @@ Examples:
                         'no-overlap (default, cut held notes at next onset, keep chords), '
                         'monophonic (single voice, lowest note only)')
     p.add_argument('--key', type=str, default=None,
-                   help='Key signature (e.g. "E" for E major, "Em" for E minor). '
-                        'Sets the MIDI key signature so MuseScore displays correct accidentals. '
-                        'If omitted, MuseScore auto-detects (often wrong).')
+                   help='Key signature for MIDI metadata (e.g. "E", "Em"). '
+                        'Auto-detected if omitted.')
     p.add_argument('--config', type=str, default=None,
                    help='Path to a JSON config file (colors, sampling zone, keyboard frame). '
                         'See configs/ directory for examples.')
@@ -1551,16 +1485,23 @@ Examples:
                    help='Manual override: music start time in seconds (skips auto-detection)')
     p.add_argument('--end-time', type=float, default=None,
                    help='Manual override: music end time in seconds (skips auto-detection)')
-    p.add_argument('--start-beat', type=float, default=1.0,
-                   help='Beat position of the first note (default: 1.0). '
+    p.add_argument('--start-beat', type=float, default=None,
+                   help='Beat position of the first note (default: auto-detect). '
                         'Use 1.5 for pickup on the "and" of beat 1, '
                         '4.5 for pickup on the "and" of beat 4, etc.')
     p.add_argument('--settings', type=str, default=None,
                    help='Path to a settings.json file with saved pipeline parameters. '
                         'CLI flags override values from the file.')
+    p.add_argument('--time-sig', type=str, default=None, dest='time_sig',
+                   help='Time signature (e.g. "6/8", "3/4"). Default: 4/4')
+    p.add_argument('--transpose', type=int, default=0,
+                   help='Transpose all notes by N semitones (e.g. -12 for one octave down)')
     p.add_argument('--triplet', action='store_true',
                    help='Use combined grid (12 per beat) that supports both straight 16ths '
                         'and triplet positions. Each note snaps to the nearest valid position.')
+    p.add_argument('--detector', choices=['keys', 'falling-blocks'], default=None,
+                   help='Note detection method: keys (default, key-lighting saturation) or '
+                        'falling-blocks (detect notes from falling colored blocks above keyboard)')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
 
@@ -1571,12 +1512,13 @@ Examples:
         with open(args.settings) as f:
             settings = json.load(f)
         SETTINGS_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                         'left_hand', 'start_time', 'end_time', 'start_beat', 'config']
+                         'left_hand', 'start_time', 'end_time', 'start_beat', 'config',
+                         'time_sig', 'transpose', 'detector']
         for key in SETTINGS_KEYS:
             if key in settings:
                 # Only override if the CLI didn't explicitly set it
                 cli_val = getattr(args, key, None)
-                if cli_val is None or (key == 'start_beat' and cli_val == 1.0):
+                if cli_val is None:
                     setattr(args, key, settings[key])
 
     # --- Apply hardcoded defaults for anything still None ---
@@ -1585,6 +1527,7 @@ Examples:
         'green_hand': 'right',
         'right_hand': 'no-overlap',
         'left_hand': 'no-overlap',
+        'detector': 'keys',
     }
     for key, default in HARDCODED_DEFAULTS.items():
         if getattr(args, key) is None:
@@ -1792,8 +1735,29 @@ def main():
         return
 
     # --- Step 3: Extract notes ---
-    if args.midi is None:
-        # VIDEO-ONLY MODE: scan frames for key state changes
+    if args.midi is None and args.detector == 'falling-blocks':
+        # FALLING-BLOCKS MODE: detect notes from colored blocks above keyboard
+        print("\n--- Step 3: Extract notes from falling blocks ---")
+        cap.release()
+        from detect_falling_blocks import detect_falling_notes_pipeline
+        video_notes = detect_falling_notes_pipeline(args.video, None)
+        video_notes.sort(key=lambda n: n[2])  # sort by onset time
+
+        if args.end_time is not None:
+            video_notes = [n for n in video_notes if n[2] <= args.end_time]
+        if args.start_time is not None:
+            video_notes = [n for n in video_notes if n[2] >= args.start_time]
+
+        right_count = sum(1 for _, h, _, _ in video_notes if h == 0)
+        left_count = sum(1 for _, h, _, _ in video_notes if h == 1)
+        print(f"Extracted {len(video_notes)} notes: right={right_count}, left={left_count}")
+
+        if not video_notes:
+            print("ERROR: No notes detected in video.", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.midi is None:
+        # VIDEO-ONLY MODE (key-press): scan frames for key state changes
         print("\n--- Step 3: Extract notes from video ---")
         video_notes = extract_notes_from_video(
             cap, note_x_map, y_sample_top, y_sample_bot,
@@ -1876,6 +1840,8 @@ def main():
             print("ERROR: No notes detected in video.", file=sys.stderr)
             sys.exit(1)
 
+    # --- Shared quantization for all video-based detectors ---
+    if args.midi is None:
         # Refine BPM using detected note onsets: test candidates near the
         # initial estimate and pick the one with least quantization error.
         if not args._had_explicit_bpm:
@@ -1924,21 +1890,58 @@ def main():
         # The RH first onset relative to first_onset may be > 0 if LH starts earlier.
         rh_first = video_notes[right_indices[0]][2] if right_indices else first_onset
         rh_rel = rh_first - first_onset  # RH's offset from the global first note
-        beat_target_sec = (args.start_beat - 1.0) * (60.0 / OUT_BPM)
+        effective_start_beat = args.start_beat if args.start_beat is not None else 1.0
+        beat_target_sec = (effective_start_beat - 1.0) * (60.0 / OUT_BPM)
         beat_pre_offset = beat_target_sec - rh_rel
         if abs(beat_pre_offset) > 0.001:
-            print(f"  start_beat={args.start_beat}, pre-offset={beat_pre_offset:.4f}s")
+            print(f"  start_beat={effective_start_beat}, pre-offset={beat_pre_offset:.4f}s")
 
-        def quantize_hand(indices, subdivisions):
-            onsets = [video_notes[i][2] - first_onset + beat_pre_offset for i in indices]
-            offsets = [video_notes[i][3] - first_onset + beat_pre_offset for i in indices]
+        def quantize_hand(indices, subdivisions, target_start_grid=0):
+            """Quantize note onsets for one hand.
+
+            target_start_grid: the grid position where the first note should
+            land.  The Viterbi quantizer always starts at 0, so we offset all
+            positions afterward.
+            """
+            onsets = [video_notes[i][2] - first_onset for i in indices]
+            offsets = [video_notes[i][3] - first_onset for i in indices]
             s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
+
+            # Group chord notes: notes within 50ms share the same onset
+            # for quantization purposes. The Viterbi quantizer requires
+            # min step=1 between consecutive entries, so chord notes sent
+            # individually would be spread to consecutive 16th positions.
+            CHORD_THRESH = 0.050  # seconds
+            groups = []  # [(representative_onset, [member_indices])]
+            for idx, onset in enumerate(onsets):
+                if groups and onset - onsets[groups[-1][1][0]] <= CHORD_THRESH:
+                    groups[-1][1].append(idx)
+                else:
+                    groups.append((onset, [idx]))
+
+            # Quantize representative onsets only.
+            # Shift to start at t=0 so Viterbi's absolute-position cost
+            # doesn't distort intervals when a hand enters late.
+            rep_onsets = [g[0] for g in groups]
+            hand_t0 = rep_onsets[0]
+            rep_onsets_shifted = [t - hand_t0 for t in rep_onsets]
             if subdivisions == 4:
-                on_g = quantize_onsets_viterbi(onsets, OUT_BPM)
+                rep_grid = quantize_onsets_viterbi(rep_onsets_shifted, OUT_BPM)
             else:
-                on_g = quantize_onsets_pll(onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+                rep_grid = quantize_onsets_pll(rep_onsets_shifted, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+
+            # Offset so the first note lands at target_start_grid
+            grid_offset = target_start_grid - rep_grid[0]
+            if grid_offset != 0:
+                rep_grid = [p + grid_offset for p in rep_grid]
+
+            # Expand back: all members of a chord group share the same grid position
+            on_g = [0] * len(onsets)
+            for gi, (_, members) in enumerate(groups):
+                for mi in members:
+                    on_g[mi] = rep_grid[gi]
+
             # Derive offset grid from onset grid + quantized duration
-            # (independent offset quantization drifts badly)
             off_g = []
             for i_idx, on_pos in enumerate(on_g):
                 raw_dur = offsets[i_idx] - onsets[i_idx]
@@ -1946,8 +1949,28 @@ def main():
                 off_g.append(on_pos + dur_grid)
             return on_g, off_g
 
-        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
-        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
+        # Compute target grid position for each hand's first note.
+        # Grid units = subdivisions per beat.
+        if args.start_beat is not None:
+            # Manual override: RH lands on the specified beat, LH at beat 1
+            rh_target = int(round((args.start_beat - 1.0) * RIGHT_SUB))
+            lh_target = 0
+        else:
+            # Auto-detect: compute offset from actual time gap between hands
+            rh_first_sec = video_notes[right_indices[0]][2] if right_indices else first_onset
+            lh_first_sec = video_notes[left_indices[0]][2] if left_indices else first_onset
+            gap_sec = rh_first_sec - lh_first_sec  # positive = RH enters later
+            beat_dur = 60.0 / OUT_BPM
+            rh_gap_grid = gap_sec / (beat_dur / RIGHT_SUB)
+            lh_gap_grid = gap_sec / (beat_dur / LEFT_SUB)
+            rh_target = max(0, int(round(rh_gap_grid)))
+            lh_target = max(0, int(round(-lh_gap_grid)))
+            if rh_target > 0 or lh_target > 0:
+                print(f"  Auto-detected hand offset: RH grid={rh_target}, LH grid={lh_target} "
+                      f"(gap={gap_sec:.3f}s)")
+
+        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB, rh_target)
+        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB, lh_target)
 
         right_events = []
         left_events = []
@@ -2078,9 +2101,14 @@ def main():
         else:
             left_events = evts
 
+    # --- Transpose ---
+    if args.transpose != 0:
+        right_events = [(t, ty, p + args.transpose, v) for t, ty, p, v in right_events]
+        left_events = [(t, ty, p + args.transpose, v) for t, ty, p, v in left_events]
+        print(f"Transposed all notes by {args.transpose:+d} semitones")
+
     # --- Key signature: use explicit --key or auto-detect for metadata ---
     key_sig = args.key
-    key_auto = False
     if not key_sig:
         # Auto-detect key for MIDI metadata (informational only)
         tmp_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
@@ -2099,12 +2127,7 @@ def main():
                 key_sig = tonic + 'm'
             else:
                 key_sig = tonic
-            key_auto = True
             print(f"Key auto-detected: {detected} (confidence={detected.correlationCoefficient:.2f})")
-
-    # --- Snap out-of-key notes only when key was explicitly specified ---
-    if key_sig and not key_auto:
-        right_events, left_events = _snap_to_key(key_sig, right_events, left_events)
 
     out_mid = MidiFile(type=1, ticks_per_beat=OUT_TPB)
     out_mid.tracks.append(build_track(right_events, 'Right Hand', OUT_US_PER_BEAT))
@@ -2112,6 +2135,10 @@ def main():
 
     if key_sig:
         out_mid.tracks[0].insert(0, MetaMessage('key_signature', key=key_sig, time=0))
+
+    if args.time_sig:
+        num, den = map(int, args.time_sig.split('/'))
+        out_mid.tracks[0].insert(0, MetaMessage('time_signature', numerator=num, denominator=den, time=0))
 
     out_mid.save(args.output)
 
@@ -2127,12 +2154,15 @@ def main():
     # --- Auto-save settings.json next to the output MIDI ---
     settings_to_save = {}
     SAVE_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                 'left_hand', 'start_time', 'end_time', 'start_beat', 'config']
+                 'left_hand', 'start_time', 'end_time', 'start_beat', 'config',
+                 'time_sig', 'transpose', 'detector']
     for key in SAVE_KEYS:
         val = getattr(args, key, None)
         if val is not None:
             # Skip defaults that don't need saving
-            if key == 'start_beat' and val == 1.0:
+            if key == 'start_beat' and val is None:
+                continue
+            if key == 'detector' and val == 'keys':
                 continue
             settings_to_save[key] = val
     settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')

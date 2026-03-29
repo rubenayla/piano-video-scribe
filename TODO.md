@@ -39,8 +39,14 @@ any room to simplify, make the code more elegant while passing tests good?
 - [ ] Auto-calibrate saturation thresholds per video. Use delta detection on a few clear
       onsets to measure the actual saturation values when keys are pressed/released, then
       set SAT_ON/SAT_OFF thresholds automatically instead of using fixed values (70/40).
-- [ ] (Low priority) Adaptive tempo tracking for drifting tempos. Currently the BPM is fixed
-      for the whole piece. For Synthesia videos this is fine (computer-generated, perfectly
-      constant tempo — tested: ±1 frame jitter only, no drift). Would matter for human
-      performance recordings or variable-speed videos. Approach: sliding window over note
-      onsets, estimate local BPM, adjust quantization grid per section.
+- [ ] **Adaptive tempo tracking for drifting tempos.** Currently the BPM is fixed
+      for the whole piece. Even Synthesia videos can drift slightly (e.g., 89 vs 90 BPM
+      causes a 1/16th shift after ~7 seconds). A soft tempo tracker that nudges the grid
+      to follow gradual drift would fix this. Approach: sliding window over note onsets,
+      estimate local BPM, adjust quantization grid per section. Should handle people
+      playing freely as long as tempo changes are gradual. Priority: HIGH — this is the
+      main remaining quality issue for the falling-blocks detector.
+- [ ] **Neural net for note detection in a measure.** Train a small model to detect
+      note positions within a single measure from the falling-blocks image. Could be more
+      robust than contour detection for complex videos with effects/glow. Worth exploring
+      if contour-based detection hits a ceiling.

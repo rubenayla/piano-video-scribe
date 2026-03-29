@@ -98,3 +98,16 @@
 - **ALWAYS read and visually inspect any generated image before showing it to the user.** This is non-negotiable — it's Rule #1 in AGENTS.md (verify rendered output).
 - After generating a summary image, open it with the Read tool and confirm the detectors are in the right place before proceeding.
 - If the user points out a visual error, fix it AND verify the fix visually in the same turn. Don't make the user be the test runner.
+
+## 2026-03-29 — Checked raw detections but not the quantized MIDI output
+
+**What happened:** While integrating the falling-blocks detector, I verified that the raw (pre-quantization) note detections had the correct pattern (6 eighth notes in the first measure). I then ran the quantizer and gave the user the MIDI path without checking the quantized output. The user opened it in MuseScore and saw 16th notes everywhere — the Viterbi quantizer was spreading chord notes (which arrive as separate events 3ms apart) to consecutive 16th-note grid positions instead of placing them simultaneously.
+
+**Root cause:** I verified the intermediate result (raw detections) but not the final result (quantized MIDI). The user explicitly told me the expected pattern ("E EGB EGB B EGB EGB, simple 1/8ths"). I had everything I needed to compare against but skipped the last step. This is the same class of error as the 2026-03-20 entries — failing to verify the actual output the user will consume.
+
+**Severity:** HIGH. The user had to open MuseScore, see the wrong result, screenshot it, and explain the problem — twice — wasting their time. This is exactly the verification failure AGENTS.md Rule #1 exists to prevent.
+
+**Prevention:**
+- After quantization, ALWAYS inspect the quantized MIDI tick positions before giving the user the file path. Compare against the expected pattern.
+- The check is simple: dump the first N note-on events from the MIDI, confirm tick spacing matches expected rhythm (e.g., 480-tick gaps for 8th notes at 960 TPB).
+- Raw detection being correct does NOT mean quantized output is correct. The quantizer can introduce its own errors (as it did here with chord spreading).

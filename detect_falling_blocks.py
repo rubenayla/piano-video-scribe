@@ -637,7 +637,7 @@ def measure_fall_speed(cap, y_min, y_max):
             for cx2, w2, h2, yb2, c2 in b2:
                 if c1 == c2 and abs(cx1 - cx2) < 5 and abs(w1 - w2) < 5:
                     dy = yb2 - yb1
-                    if 15 < dy < 50:
+                    if 10 < dy < 150:
                         speeds.append(dy / 10.0)
 
     speed = float(np.median(speeds)) if speeds else 2.7
@@ -804,7 +804,7 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 
 def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
-                          colors=None, merge_tolerance=0.06, min_duration=0.10,
+                          colors=None, merge_tolerance=0.06, min_duration=0.12,
                           sample_step=None, keyboard_y_for_onset=None):
     """Extract notes by detecting block contours and projecting onset/duration.
 
@@ -966,6 +966,26 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
         i = j
 
     notes.sort(key=lambda n: n[2])
+
+    # Deduplicate: drop same-pitch same-hand notes that overlap in time.
+    # This removes false duplicates from contour detection seeing the same
+    # block at slightly different positions across frames.
+    pre_dedup = len(notes)
+    deduped = []
+    for note in notes:
+        pitch, hand, onset, offset = note
+        is_dup = False
+        for k in range(len(deduped) - 1, max(-1, len(deduped) - 20), -1):
+            dp, dh, don, doff = deduped[k]
+            if dp == pitch and dh == hand and onset < doff:
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append(note)
+    notes = deduped
+    if len(notes) < pre_dedup:
+        print(f"  Deduplication: {pre_dedup} → {len(notes)} notes "
+              f"(removed {pre_dedup - len(notes)} overlapping duplicates)")
 
     rh = sum(1 for _, h, _, _ in notes if h == 0)
     lh = sum(1 for _, h, _, _ in notes if h == 1)
@@ -1319,10 +1339,11 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=4):
     lh_count = sum(1 for _, h, _, _ in notes if h == 1)
     print(f"\n  RH={rh_count}, LH={lh_count}, total={len(notes)}")
 
-    # Write MIDI
-    print(f"\n--- Writing MIDI ---")
-    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    notes_to_midi(notes, output_path, bpm=bpm)
+    # Write MIDI (skip when called as a library with output_path=None)
+    if output_path is not None:
+        print(f"\n--- Writing MIDI ---")
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        notes_to_midi(notes, output_path, bpm=bpm)
 
     cap.release()
 
