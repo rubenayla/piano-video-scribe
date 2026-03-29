@@ -1,0 +1,12 @@
+{
+  "bpm": 90,
+  "key": "",
+  "green_hand": "right",
+  "frame": 210,
+  "right_hand": "monophonic",
+  "left_hand": "no-overlap",
+  "start_beat": 7.0,
+  "time_sig": "6/8",
+  "transpose": 0,
+  "detector": "falling-blocks"
+}

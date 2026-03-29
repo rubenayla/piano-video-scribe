@@ -111,3 +111,14 @@
 - After quantization, ALWAYS inspect the quantized MIDI tick positions before giving the user the file path. Compare against the expected pattern.
 - The check is simple: dump the first N note-on events from the MIDI, confirm tick spacing matches expected rhythm (e.g., 480-tick gaps for 8th notes at 960 TPB).
 - Raw detection being correct does NOT mean quantized output is correct. The quantizer can introduce its own errors (as it did here with chord spreading).
+
+## 2026-03-29 — Labeled worktrees as "obsolete" and "stale" without knowing
+
+**What happened:** User asked if there were obsolete worktrees. Agent listed them and confidently labeled 3 out of 4 as "Obsolete" and offered to delete them. One of those worktrees was an active agent the user had just mentioned. Agent had no way to know which worktrees were in use but stated it as fact anyway.
+
+**Root cause:** Making up information to appear helpful. The agent had no knowledge of which worktrees were active (another agent/process could be using any of them) but presented confident labels anyway. This is the same pattern as the 2026-03-20 fabrication entry — stating unverified claims as facts.
+
+**Prevention:**
+- If you don't know something, say "I don't know." Don't guess and present it as fact.
+- Worktrees, running agents, and external processes are outside your visibility. Never claim to know their status.
+- When listing things for the user, present the raw information and let the user decide. Don't add judgments you can't back up.

@@ -105,19 +105,14 @@ class TestTest2Regression:
             pass  # Octave mapping makes absolute MIDI checks tricky.
             # Instead, check no RH false positives at specific times:
 
-    def test_no_false_positives_at_known_times(self):
-        """Pipeline should not detect phantom notes at these timestamps.
+    def test_f_notes_detected_at_102s(self):
+        """RH should detect the repeated F5 notes around 101-102s.
 
-        Bug: 5 phantom F#/F detections with zero saturation in video.
+        Previously marked as phantom detections, but these are real notes
+        clearly visible as blue falling blocks in the video.
         """
-        phantom_times_pc = [
-            # (time, pitch_class) — verified no key press in video
-            (102.22, 5),   # F (pc=5) at 102.22s
-        ]
-        for t, pc in phantom_times_pc:
-            if has_note_near(self.rh, t, pc, tolerance=0.3):
-                # Not a hard fail yet — flag as known issue
-                pytest.xfail(f"Known phantom detection: pc={pc} at t={t:.1f}s")
+        f_count = sum(1 for t, pc, _ in self.rh if pc == 5 and 101.0 < t < 102.5)
+        assert f_count >= 4, f'Expected repeated F5 notes around 101-102s, got {f_count}'
 
     def test_rapid_repeat_detection(self):
         """Pipeline should detect rapid repeated notes on the same key.
