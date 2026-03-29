@@ -803,7 +803,7 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
 
 
 def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
-                          colors=None, merge_tolerance=0.06, min_duration=0.05,
+                          colors=None, merge_tolerance=0.06, min_duration=0.10,
                           sample_step=None, keyboard_y_for_onset=None):
     """Extract notes by detecting block contours and projecting onset/duration.
 
