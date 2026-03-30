@@ -1135,17 +1135,17 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
 # BPM detection
 # ---------------------------------------------------------------------------
 
-def detect_bpm(notes):
+def detect_bpm(notes: list[tuple]) -> float:
     """Estimate BPM from note onset intervals."""
     if len(notes) < 4:
-        return 78
+        return 78.0
 
     onsets = sorted(set(round(n[2], 3) for n in notes))
     intervals = [onsets[i] - onsets[i - 1] for i in range(1, len(onsets))
                  if 0.15 < onsets[i] - onsets[i - 1] < 4.0]
 
     if not intervals:
-        return 78
+        return 78.0
 
     intervals = np.array(intervals)
 
@@ -1171,10 +1171,10 @@ def detect_bpm(notes):
         # Prefer quarter note if reasonable, otherwise pick closest to 78
         for bpm, name, _ in candidates:
             if name == 'quarter' and 50 <= bpm <= 120:
-                return round(bpm)
+                return bpm
         # Fallback: closest to 78
         best = min(candidates, key=lambda c: abs(c[0] - 78))
-        return round(best[0])
+        return best[0]
 
     return 78
 
@@ -1346,6 +1346,15 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
         print(f"    {midi_to_name(midi):5s} kb_x={kb_x:.0f} → block_x={blk_x:.0f} "
               f"(predicted={pred:.0f}, err={blk_x - pred:.1f})")
 
+    # Reject calibration if max residual exceeds half the minimum gap between
+    # adjacent notes — a residual that large can flip pitches at boundaries.
+    sorted_xs = sorted(note_map.values())
+    min_gap = min(sorted_xs[i+1] - sorted_xs[i] for i in range(len(sorted_xs)-1))
+    if max_res > min_gap / 2:
+        print(f"  Calibration rejected: max_residual {max_res:.1f}px > "
+              f"min_gap/2 {min_gap/2:.1f}px — would risk semitone errors")
+        return note_map
+
     # Apply transform to note_map
     calibrated = {midi: best_a * x + best_b for midi, x in note_map.items()}
     return calibrated
@@ -1415,26 +1424,45 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
         print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']}, s_min={c.get('s_min', 80)})")
 
     # Step 2: Build pitch map.
-    # Try block-based first (uses actual block positions, most accurate).
-    # Fall back to keyboard detector if not enough blocks for a grid fit.
+    # Keyboard detector is preferred (reliable octave assignment from visible
+    # keyboard). Block positions are used to calibrate x-coordinates. Pure
+    # block-based mapping (identify_c_position + base_octave) is a last resort
+    # — it can't reliably determine the absolute octave.
     print(f"\n--- Step 2: Building pitch map ---")
     key_positions = collect_and_cluster_blocks(cap, y_min, y_max, colors=colors)
     print(f"  {len(key_positions)} discrete keys")
 
     note_map = None
     use_block_based = False
-    if len(key_positions) >= 15:
+
+    # Strategy 1: Keyboard detector (reliable octave) + block calibration
+    from piano_video_scribe.keyboard import detect_keyboard as _detect_kb
+    from piano_video_scribe.keyboard import build_note_x_map as _build_nxm
+    try:
+        kb_result = _detect_kb(cap, frame_idx=None)
+        wk, bk = kb_result[0], kb_result[1]
+        note_map = _build_nxm(wk, bk, 21)
+        print(f"  Keyboard detector: {len(wk)} white, {len(bk)} black keys")
+        print(f"  Pitch map: {len(note_map)} notes "
+              f"(MIDI {min(note_map)}-{max(note_map)})")
+
+        # Calibrate note_map x-coordinates using block positions
+        if len(key_positions) >= 3:
+            note_map = _calibrate_note_map_with_blocks(
+                note_map, key_positions)
+
+    except Exception as e:
+        print(f"  Keyboard detector failed: {e}")
+
+    # Strategy 2: Pure block-based mapping (fallback when keyboard not visible)
+    if note_map is None and len(key_positions) >= 15:
         try:
             spacing, offset, n_white, blacks = fit_white_key_grid(key_positions)
-            # Only use block-based mapping if we have enough black keys
-            # for reliable C identification (need at least 5 black keys
-            # per octave span to avoid ambiguous identification)
             n_blacks = len(blacks)
             n_octaves = max(1, n_white / 7.0)
             blacks_per_octave = n_blacks / n_octaves
             if blacks_per_octave >= 2.0 and n_white >= 20:
                 c_idx = identify_c_position(spacing, offset, n_white, blacks)
-                # Auto-detect octave from keyboard size if not explicitly set
                 if base_octave is None:
                     if n_white >= 28:
                         base_octave = 2  # C2 start — 4+ octave keyboard
@@ -1443,35 +1471,12 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
                 note_map = build_pitch_map(spacing, offset, n_white, c_idx, blacks,
                                            base_octave=base_octave)
                 use_block_based = True
-                print(f"  Block-based pitch map: {len(note_map)} notes")
+                print(f"  Block-based pitch map (fallback): {len(note_map)} notes")
             else:
                 print(f"  Too few black keys ({n_blacks} across {n_octaves:.1f} octaves, "
                       f"{blacks_per_octave:.1f}/oct) for reliable C identification")
         except Exception as e:
             print(f"  Block-based mapping failed: {e}")
-
-    if note_map is None:
-        # Fall back to keyboard detector + offset correction
-        print(f"  Using keyboard detector for pitch map")
-        from piano_video_scribe.keyboard import detect_keyboard as _detect_kb
-        from piano_video_scribe.keyboard import build_note_x_map as _build_nxm
-        try:
-            kb_result = _detect_kb(cap, frame_idx=None)
-            wk, bk = kb_result[0], kb_result[1]
-            note_map = _build_nxm(wk, bk, 21)
-            print(f"  Keyboard detector: {len(wk)} white, {len(bk)} black keys")
-
-            print(f"  Pitch map: {len(note_map)} notes "
-                  f"(MIDI {min(note_map)}-{max(note_map)})")
-
-            # Calibrate note_map using block positions
-            if len(key_positions) >= 3:
-                note_map = _calibrate_note_map_with_blocks(
-                    note_map, key_positions)
-
-        except Exception as e:
-            print(f"  Keyboard detector failed: {e}")
-            note_map = {}
 
     if not note_map:
         print("  ERROR: No pitch map available", file=sys.stderr)

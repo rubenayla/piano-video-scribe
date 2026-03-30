@@ -22,21 +22,14 @@
   - Puppet: `~/piano/songs/ib-marys-theme-puppet/`
   - Pipeline saves settings on each run — be careful not to overwrite test settings files
 
-- **Fix falling-blocks pitch mapping bugs (octave + semitone errors)**
-  - test3: `identify_c_position` + `base_octave=2` places notes ~2 octaves too low. Grid fit residual (38px) nearly equals spacing (43px) — unreliable.
-  - test4: block x-center off by a few pixels causes C5 instead of C#5 (semitone errors at pitch boundaries).
-  - Possible fix: use the keyboard detector's pitch map as ground truth when the video has visible key labels, and only use block-based mapping when keyboard detection fails.
-  - Until fixed, test3/test4/test5/test7 must use `"detector": "keys"`.
-
 - **Pipeline saves settings.json on every run — can corrupt test fixtures**
   - The pipeline auto-saves settings (including auto-detected values like `detector`) to the settings file
   - This overwrites committed test settings (e.g., changing `"detector": "keys"` to `"falling-blocks"`)
   - Fix: don't auto-save to test directories, or save to a separate output path
 
-## In Progress
-
 ## Done (2026-03-30)
 
+- [2026-03-31] **Fix falling-blocks pitch mapping**: Keyboard detector now used first for pitch mapping (reliable octave), with block-based as fallback. Calibration rejected when max residual > min_gap/2 to prevent semitone errors. Also fixed argparse `--detector` default shadowing settings file values. test3: E6/D#6/B5 correct (was D4/B3/G#3). test4: C#5 correct (was C5).
 - [2026-03-31] **Compare keys vs falling-blocks detector on test3/test4**: Keys detector is correct; falling-blocks has critical pitch mapping bugs. See details below.
   - **test3**: Keys detector gets correct pitches (E6, D#6, B5, G#5 matching GT exactly). Falling-blocks maps same notes to D4, B3, G#3 (~2 octaves too low). Root cause: `identify_c_position` with `base_octave=2` places C at wrong grid position; grid fit has max_residual=38px (nearly equal to spacing=43px), meaning the grid itself is unreliable. Falling-blocks: 0% exact pitch match. Keys: 98% LH, 49% RH (RH limited by progressive timing drift, not pitch errors).
   - **test4**: Keys detector matches GT perfectly (C#5, D5, A5...). Falling-blocks falls back to keyboard detector (too few blocks for grid fit) but still gets pitch errors (C5 instead of C#5). Root cause: block x-center slightly off, landing in wrong pitch boundary. Falling-blocks: 6% RH exact match. Keys: 32% RH, 90% LH.

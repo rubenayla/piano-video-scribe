@@ -95,7 +95,7 @@ Examples:
     p.add_argument('output', help='Path to output MIDI')
     # All settings-overridable args default to None so --settings can fill them in.
     # Hardcoded defaults are applied after settings are merged.
-    p.add_argument('--bpm', type=int, default=None,
+    p.add_argument('--bpm', type=float, default=None,
                    help='BPM of the song. Auto-detected from video audio if omitted.')
     p.add_argument('--frame', type=int, default=None,
                    help='Frame index for keyboard detection (default: 5, should be note-free)')
