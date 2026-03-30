@@ -3,7 +3,7 @@
 
 import pytest
 
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+from piano_video_scribe.constants import NOTE_NAMES
 
 # Key signature pitch class sets
 KEY_PCS = {

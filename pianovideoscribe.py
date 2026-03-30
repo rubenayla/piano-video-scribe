@@ -413,7 +413,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
     Returns:
         dict mapping MIDI note int → x pixel int.
     """
-    WHITE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]  # C D E F G A B
+    from piano_video_scribe.constants import WHITE_SEMITONES
 
     c_start_idx = find_first_c(white_keys, black_keys)
 
@@ -1312,7 +1312,7 @@ def generate_summary_image(cap, frame_idx, white_keys, black_keys, y_white,
         return
 
     h, w = frame.shape[:2]
-    NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    from piano_video_scribe.constants import NOTE_NAMES
     BLACK_SEMI = {1, 3, 6, 8, 10}
 
     # Colors for detector overlays

@@ -29,13 +29,7 @@ from mido import MidiFile, MidiTrack, Message, MetaMessage
 # Constants
 # ---------------------------------------------------------------------------
 
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-WHITE_SEMITONES = [0, 2, 4, 5, 7, 9, 11]  # C D E F G A B
-
-
-def midi_to_name(midi_num):
-    octave = (midi_num // 12) - 1
-    return f"{NOTE_NAMES[midi_num % 12]}{octave}"
+from piano_video_scribe.constants import NOTE_NAMES, WHITE_SEMITONES, midi_to_name
 
 
 # ---------------------------------------------------------------------------

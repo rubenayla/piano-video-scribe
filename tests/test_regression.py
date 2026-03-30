@@ -15,7 +15,7 @@ import mido
 import pytest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+from piano_video_scribe.constants import NOTE_NAMES
 
 
 def _run_pipeline(test_name):
