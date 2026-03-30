@@ -210,19 +210,31 @@ One of these steps introduces a rounding error that accumulates to 1/16th. The c
 
 **What happened:** The regression test for test4 failed (73 RH notes, expected 80–110). test4's `settings.json` specifies `"detector": "keys"`, but the pipeline ignored it and ran with `falling-blocks` instead. This meant test4 ran with the wrong detector every time, and the auto-save bug then overwrote `settings.json` with `"detector": "falling-blocks"`, compounding the damage.
 
-**Root cause:** The config merge logic in `config.py` (line 177) only applies settings.json values when the corresponding CLI attribute is `None`:
+**Root cause — step by step:**
+
+The config system has a 3-stage merge: (1) argparse parses CLI args, (2) settings.json fills in anything the CLI didn't set, (3) `HARDCODED_DEFAULTS` fills in anything still missing. The intent is that CLI args take priority over settings.json, which takes priority over hardcoded defaults.
+
+Stage 2 decides "did the CLI set this?" by checking if the value is `None`:
 
 ```python
-cli_val = getattr(args, key, None)
-if cli_val is None:
-    setattr(args, key, settings[key])
+cli_val = getattr(args, key, None)   # read what argparse produced
+if cli_val is None:                   # None means "CLI didn't set it"
+    setattr(args, key, settings[key]) # so apply the settings.json value
 ```
 
-But `--detector` had `default='falling-blocks'` in its argparse definition — so `args.detector` was always `'falling-blocks'`, never `None`, even when the user didn't pass `--detector` on the command line. The settings file value was silently ignored every time.
+This works when argparse uses `default=None` — if the user doesn't pass `--detector`, argparse stores `None`, stage 2 sees `None`, and fills in the settings.json value.
 
-The same default already existed in `HARDCODED_DEFAULTS` (applied after settings merge), so argparse was redundantly setting the default *before* the settings file had a chance to override it.
+But `--detector` was defined with `default='falling-blocks'`:
 
-**The subtle trap:** Argparse defaults and explicit CLI arguments are indistinguishable via `getattr()`. Any argparse argument with a non-None default will shadow the corresponding settings.json value. This pattern affects ALL settings keys that have argparse defaults, not just `--detector`.
+```python
+p.add_argument('--detector', ..., default='falling-blocks')
+```
+
+So when the user runs `python pianovideoscribe.py video.mp4 out.mid --settings settings.json` (no `--detector`), argparse stores `'falling-blocks'` — not `None`. Then stage 2 reads `cli_val = 'falling-blocks'`, the `if cli_val is None` check is `False`, and `settings["detector"] = "keys"` is never applied.
+
+The result: `args.detector` is always `'falling-blocks'` regardless of what the settings file says, unless the user explicitly passes `--detector keys` on the command line. Stage 2 can't tell the difference between "user typed `--detector falling-blocks`" and "argparse filled in the default" — both produce the same string.
+
+Stage 3 (`HARDCODED_DEFAULTS`) already had `'detector': 'falling-blocks'` as a fallback, so the argparse default was redundant — it just ran at the wrong point in the merge, before settings.json had a chance to override it.
 
 **Fix:** Changed `--detector` argparse default from `'falling-blocks'` to `None`. The `HARDCODED_DEFAULTS` dict already provides the same fallback, but at the right point in the merge order: CLI arg → settings.json → hardcoded default.
 
