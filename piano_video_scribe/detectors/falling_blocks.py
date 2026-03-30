@@ -790,11 +790,6 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
             if pitch is None:
                 continue
             # Project onset: how long until this block's bottom reaches keyboard.
-            # Skip blocks clipped at y_max — their y_bot is truncated, which
-            # makes the onset projection too early. We'll see them again once
-            # they're fully inside the scan region.
-            if y_bot >= y_max - 2:
-                continue
             onset_sec = t_now + max(0, onset_ref_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
             observations.append((pitch, color_name, onset_sec, dur_sec))
@@ -898,6 +893,188 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
     rh = sum(1 for _, h, _, _ in notes if h == 0)
     lh = sum(1 for _, h, _, _ in notes if h == 1)
     print(f"  {len(observations)} obs → {len(notes)} notes ({rh} RH, {lh} LH)")
+    return notes
+
+
+def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
+                           keyboard_y_for_onset=None, colors=None,
+                           sample_step=None, min_duration=0.08):
+    """Extract notes by tracking blocks across frames.
+
+    Tracks individual blocks as they fall, merging onset predictions from
+    multiple observations of the same block. This produces more accurate
+    onset times than independent per-frame observation.
+
+    Returns list of (pitch, hand, onset_sec, offset_sec) tuples.
+    """
+    # --- 1. Setup ---
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    px_per_sec = fall_speed * fps
+    onset_ref_y = keyboard_y_for_onset if keyboard_y_for_onset is not None else y_max
+
+    x_to_pitch = _build_x_to_pitch(note_map)
+
+    # Compute half_key: median white key spacing / 2
+    pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
+    white_semitones_set = {0, 2, 4, 5, 7, 9, 11}
+    white_xs = [x for midi, x in pitches_sorted if midi % 12 in white_semitones_set]
+    if len(white_xs) >= 2:
+        spacings = [white_xs[i + 1] - white_xs[i] for i in range(len(white_xs) - 1)]
+        half_key = float(np.median(spacings)) / 2.0
+    else:
+        half_key = 10.0  # fallback
+
+    # Adaptive sample step
+    if sample_step is None:
+        visible_height = y_max - y_min
+        fall_time_frames = visible_height / max(0.1, fall_speed)
+        sample_step = max(1, min(10, int(fall_time_frames / 10)))
+        n_frames = total // sample_step
+        print(f"  Sample step: {sample_step} frames ({n_frames} frames)")
+
+    # --- 2-4. Per-frame detection with tracking ---
+    active_tracks = []  # list of track dicts
+    finished_notes = []  # (pitch, color, onset, offset)
+
+    def _close_track(track):
+        """Close a track and emit a note if long enough."""
+        if not track['onset_predictions']:
+            return
+        onset = float(np.median(track['onset_predictions']))
+        # Duration from unclipped observations
+        unclipped_bhs = [
+            bh for _, y_bot, bh in track['observations']
+            if y_bot < y_max - 2 and (y_bot - bh) > y_min + 2
+        ]
+        if unclipped_bhs:
+            duration = float(np.median(unclipped_bhs)) / px_per_sec
+        else:
+            all_bhs = [bh for _, _, bh in track['observations']]
+            duration = float(np.median(all_bhs)) / px_per_sec
+        if duration >= min_duration:
+            finished_notes.append((track['pitch'], track['color'],
+                                   onset, onset + duration))
+
+    for fi in range(0, total, sample_step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        blocks = detect_blocks_in_frame(hsv, y_min, y_max, colors=colors)
+
+        matched_track_indices = set()
+
+        for cx, bw, bh, y_bot, color_name in blocks:
+            pitch = x_to_pitch(cx)
+            if pitch is None:
+                continue
+
+            # Find matching track
+            best_idx = None
+            best_dist = float('inf')
+            for ti, track in enumerate(active_tracks):
+                if ti in matched_track_indices:
+                    continue
+                if track['pitch'] != pitch or track['color'] != color_name:
+                    continue
+                frame_gap = fi - track['last_frame']
+                expected_y = track['last_y_bot'] + fall_speed * frame_gap
+                dist = abs(y_bot - expected_y)
+                threshold = fall_speed * frame_gap * 2
+                if dist < threshold and dist < best_dist:
+                    best_dist = dist
+                    best_idx = ti
+
+            # Onset prediction for this observation
+            onset_pred = fi / fps + max(0, onset_ref_y - y_bot) / px_per_sec
+
+            if best_idx is not None:
+                # Update existing track
+                track = active_tracks[best_idx]
+                track['observations'].append((fi, y_bot, bh))
+                track['onset_predictions'].append(onset_pred)
+                track['last_frame'] = fi
+                track['last_y_bot'] = y_bot
+                matched_track_indices.add(best_idx)
+            else:
+                # Create new track
+                active_tracks.append({
+                    'pitch': pitch,
+                    'color': color_name,
+                    'observations': [(fi, y_bot, bh)],
+                    'onset_predictions': [onset_pred],
+                    'last_frame': fi,
+                    'last_y_bot': y_bot,
+                })
+
+        # Close stale tracks
+        stale_threshold = 5 * sample_step
+        still_active = []
+        for track in active_tracks:
+            if fi - track['last_frame'] > stale_threshold:
+                _close_track(track)
+            else:
+                still_active.append(track)
+        active_tracks = still_active
+
+        if fi % 500 == 0 and fi > 0:
+            print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
+                  f"— {len(finished_notes)} notes, {len(active_tracks)} active tracks")
+
+    # --- 6. Close remaining tracks ---
+    for track in active_tracks:
+        _close_track(track)
+    active_tracks = []
+
+    print(f"  {len(finished_notes)} raw notes from {total // sample_step} frames")
+
+    # --- 5. Hand assignment ---
+    color_pitches = defaultdict(list)
+    for pitch, color_name, onset, offset in finished_notes:
+        color_pitches[color_name].append(pitch)
+
+    if len(color_pitches) >= 2:
+        color_avg = {c: np.mean(ps) for c, ps in color_pitches.items()}
+        sorted_colors = sorted(color_avg, key=lambda c: -color_avg[c])
+        hand_map = {sorted_colors[0]: 0}  # highest pitch = RH
+        for c in sorted_colors[1:]:
+            hand_map[c] = 1
+        assignments = ', '.join(f'{c}={"RH" if h==0 else "LH"}' for c, h in hand_map.items())
+        print(f"  Hand assignment: {assignments}")
+    elif len(color_pitches) == 1:
+        hand_map = {list(color_pitches.keys())[0]: None}
+        print(f"  Single color detected — hand from pitch")
+    else:
+        hand_map = {}
+
+    notes = [(pitch, hand_map.get(cn), onset, offset)
+             for pitch, cn, onset, offset in finished_notes]
+    notes.sort(key=lambda n: n[2])
+
+    # Deduplicate: drop same-pitch same-hand notes that overlap in time
+    pre_dedup = len(notes)
+    deduped = []
+    for note in notes:
+        pitch, hand, onset, offset = note
+        is_dup = False
+        for k in range(len(deduped) - 1, max(-1, len(deduped) - 20), -1):
+            dp, dh, don, doff = deduped[k]
+            if dp == pitch and dh == hand and onset < doff:
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append(note)
+    notes = deduped
+    if len(notes) < pre_dedup:
+        print(f"  Deduplication: {pre_dedup} → {len(notes)} notes "
+              f"(removed {pre_dedup - len(notes)} overlapping duplicates)")
+
+    rh = sum(1 for _, h, _, _ in notes if h == 0)
+    lh = sum(1 for _, h, _, _ in notes if h == 1)
+    print(f"  Final: {len(notes)} notes ({rh} RH, {lh} LH)")
     return notes
 
 
@@ -1255,10 +1432,10 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
     print(f"\n--- Step 6: Measuring fall speed ---")
     fall_speed = measure_fall_speed(cap, y_min, kb_y)
 
-    # Step 7: Extract notes via contour detection + cross-frame merge
-    print(f"\n--- Step 7: Extracting notes (contour) ---")
-    notes = extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
-                                  colors=colors, keyboard_y_for_onset=kb_y)
+    # Step 7: Extract notes via block tracking across frames
+    print(f"\n--- Step 7: Extracting notes (tracking) ---")
+    notes = extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
+                                   colors=colors, keyboard_y_for_onset=kb_y)
 
     # Step 8: BPM
     print(f"\n--- Step 8: BPM detection ---")
