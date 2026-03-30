@@ -4,5 +4,6 @@
   "frame": 5,
   "right_hand": "monophonic",
   "left_hand": "monophonic",
-  "transpose": 0
+  "transpose": 0,
+  "glow_margin": 100
 }

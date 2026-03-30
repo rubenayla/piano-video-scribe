@@ -119,7 +119,10 @@ def main():
         print("\n--- Step 3: Extract notes from falling blocks ---")
         cap.release()
         from piano_video_scribe.detectors.falling_blocks import detect_falling_notes_pipeline
-        video_notes = detect_falling_notes_pipeline(args.video, None)
+        fb_kwargs = {}
+        if getattr(args, 'glow_margin', None) is not None:
+            fb_kwargs['glow_margin'] = args.glow_margin
+        video_notes = detect_falling_notes_pipeline(args.video, None, **fb_kwargs)
         video_notes.sort(key=lambda n: n[2])  # sort by onset time
 
         if args.end_time is not None:

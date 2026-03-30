@@ -1123,7 +1123,7 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def detect_falling_notes_pipeline(video_path, output_path, base_octave=None):
+def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **kwargs):
     """Full pipeline: video -> MIDI via falling block detection."""
     print(f"\n{'=' * 60}")
     print(f"Falling Block Note Detection")
@@ -1159,10 +1159,11 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None):
             if _sat > w * 0.05:  # >5% of frame width
                 y_min = _y
                 break
-    # Scan the waterfall area but exclude a generous band near the keyboard
-    # where key-press glow widens block contours and causes false detections
-    # on adjacent keys. 100px margin safely avoids the glow zone.
-    y_max = max(y_min + 10, kb_y - 100)
+    # Scan the waterfall area but exclude a band near the keyboard
+    # where key-press glow widens block contours and causes false detections.
+    # Default 50px; configurable via glow_margin in settings.
+    glow_margin = kwargs.get('glow_margin', 50)
+    y_max = max(y_min + 10, kb_y - glow_margin)
     print(f"  Keyboard at y={kb_y}")
     print(f"  Block region: y={y_min}..{y_max}")
 
