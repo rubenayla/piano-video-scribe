@@ -792,7 +792,12 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
             pitch = x_to_pitch(cx)
             if pitch is None:
                 continue
-            # Project onset: how long until this block's bottom reaches keyboard
+            # Project onset: how long until this block's bottom reaches keyboard.
+            # Skip blocks clipped at y_max — their y_bot is truncated, which
+            # makes the onset projection too early. We'll see them again once
+            # they're fully inside the scan region.
+            if y_bot >= y_max - 2:
+                continue
             onset_sec = t_now + max(0, onset_ref_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
             observations.append((pitch, color_name, onset_sec, dur_sec))
