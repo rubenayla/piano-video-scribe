@@ -7,5 +7,6 @@
   "left_hand": "no-overlap",
   "start_beat": 1.0,
   "time_sig": "6/8",
-  "transpose": 0
+  "transpose": 0,
+  "sample_step": 1
 }

@@ -167,3 +167,30 @@
 **Prevention:**
 - When an instruction doesn't make sense in the current context (e.g. "rating" in a test config), ASK where/how instead of guessing.
 - If unsure which file or system the user means, ask. A 5-second clarifying question saves minutes of wrong work and user frustration.
+
+## 2026-03-30 — Discarded pre-existing unstaged changes with git checkout without inspecting them
+
+**What happened:** During the config refactor commit, ran `git checkout -- tests/test-falling-puppet/settings.json` to "restore test settings modified by test run auto-save." But that file was already modified *before* the session started (shown in initial git status as ` M tests/test-falling-puppet/settings.json`). The pre-existing change included `sample_step: 1`, an intentional tuning parameter. By blindly restoring, that value was lost. Another agent had to add it back.
+
+**Root cause:** Assumed all modifications to test settings files were test-run artifacts without checking what the pre-existing diff actually contained. The initial git status clearly showed the file was modified before the session — that should have been a signal to inspect before discarding.
+
+**Prevention:**
+- Before running `git checkout --` on any file, check `git diff` for that file first. If the file was modified before your session started, those are likely the user's intentional changes — do not discard them.
+- When committing, separate "files I changed" from "files that were already modified" and handle them differently. Pre-existing changes deserve inspection, not blind restoration.
+
+## 2026-03-30 — Quantizer 1/16th drift in pipeline output despite correct standalone results
+
+**What happened:** Two songs have a 1/16th shift that appears mid-piece:
+- Laufey (From The Start): LH shifts +1/16th at measure 15
+- Puppet (Ib Mary's Theme): LH shifts +1/16th at second half of measure 7
+
+The adaptive quantizer (`quantize_onsets_adaptive`) produces correct grid positions when called directly on the raw onsets. But the pipeline's `quantize_hand()` function produces shifted results. The quantizer itself is NOT broken.
+
+**Root cause (under investigation):** The pipeline's `quantize_hand()` wraps the quantizer with:
+1. Chord grouping (50ms threshold) — may shift representative onsets
+2. `hand_t0` subtraction and re-addition as `hand_grid_offset`
+3. `start_grid_offset` addition
+
+One of these steps introduces a rounding error that accumulates to 1/16th. The chord grouping is the most likely suspect — if a chord group's representative onset is taken from the first note (which may be slightly early), the shifted onset could land on the wrong grid position.
+
+**Status:** Documented, not yet fixed. The quantizer core is correct; the bug is in the pipeline's quantize_hand() wrapper.
