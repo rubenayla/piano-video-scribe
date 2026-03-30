@@ -4,12 +4,6 @@
 ## TODO
 
 
-- **Fix Puppet LH 8th-note grid alignment (m7 drift)**
-  - Puppet LH still has 87/247 notes on off-8th positions (test expects ≤10)
-  - The BPM is correct (90), but raw onsets have a constant phase offset (+0.1-0.2 grid16)
-  - This is NOT a BPM drift — it's a detection bias (fall speed or keyboard_y calibration)
-  - Might need a phase-offset correction step in the quantizer
-  - **Also**: LH measure 5 has wrong rhythm — investigate why
 
 - **Improve `estimate_local_bpm` convergence**
   - Currently uses median filter (window=7) + rate limiter to reject garbage BPM estimates from mis-rounded grid positions
@@ -22,13 +16,15 @@
   - Puppet: `~/piano/songs/ib-marys-theme-puppet/`
   - Pipeline saves settings on each run — be careful not to overwrite test settings files
 
-- **Pipeline saves settings.json on every run — can corrupt test fixtures**
-  - The pipeline auto-saves settings (including auto-detected values like `detector`) to the settings file
-  - This overwrites committed test settings (e.g., changing `"detector": "keys"` to `"falling-blocks"`)
-  - Fix: don't auto-save to test directories, or save to a separate output path
+- **Simplify config merge: settings.json first, CLI flags overwrite, never write back**
+  - Load settings.json as the baseline config for the run
+  - CLI flags overwrite settings in memory (only the ones the user actually passed)
+  - Never write back to settings.json — the file is read-only input
+  - This also fixes the auto-save bug (pipeline currently overwrites settings.json on every run, corrupting test fixtures)
 
 ## Done (2026-03-30)
 
+- [2026-03-31] **Fix Puppet LH 8th-note grid alignment**: Added `_refine_bpm_for_grid()` drift correction to `quantize_onsets_simple()`. Root cause: falling-blocks detector's fall speed implies ~89.07 BPM vs nominal 90 BPM, causing progressive phase drift (+0.5 grid16 over the piece). The quantizer now searches ±1.5% of nominal BPM (0.01 steps) to maximize 8th-grid alignment before rounding. Result: 0/247 LH notes off-grid (was 87/247). All 7 puppet tests pass.
 - [2026-03-31] **Fix falling-blocks pitch mapping**: Keyboard detector now used first for pitch mapping (reliable octave), with block-based as fallback. Calibration rejected when max residual > min_gap/2 to prevent semitone errors. Also fixed argparse `--detector` default shadowing settings file values. test3: E6/D#6/B5 correct (was D4/B3/G#3). test4: C#5 correct (was C5).
 - [2026-03-31] **Compare keys vs falling-blocks detector on test3/test4**: Keys detector is correct; falling-blocks has critical pitch mapping bugs. See details below.
   - **test3**: Keys detector gets correct pitches (E6, D#6, B5, G#5 matching GT exactly). Falling-blocks maps same notes to D4, B3, G#3 (~2 octaves too low). Root cause: `identify_c_position` with `base_octave=2` places C at wrong grid position; grid fit has max_residual=38px (nearly equal to spacing=43px), meaning the grid itself is unreliable. Falling-blocks: 0% exact pitch match. Keys: 98% LH, 49% RH (RH limited by progressive timing drift, not pitch errors).

@@ -11,24 +11,66 @@ import statistics
 # Simple round-to-nearest quantizer (default)
 # ---------------------------------------------------------------------------
 
-def quantize_onsets_simple(onset_secs, bpm):
+def quantize_onsets_simple(onset_secs: list[float], bpm: float) -> list[int]:
     """Snap each onset independently to the nearest 16th-note grid position.
 
-    Always applies drift correction first (if enough notes), then rounds.
-    If there's no drift, the correction is zero and changes nothing.
+    Two-stage correction:
+    1. Drift correction: refines the effective BPM so that raw onsets don't
+       accumulate a progressive phase offset (common with falling-blocks
+       detector where fall speed ≠ exact musical tempo).
+    2. Per-interval BPM correction: estimates local BPM from each interval
+       and warps to match the nominal grid.
     """
     s = 60.0 / bpm / 4  # 16th note duration
     if not onset_secs:
         return []
 
-    if len(onset_secs) >= 4:
-        # Always correct for drift — if there's none, warp is a no-op.
-        grid0 = [round(t / s) for t in onset_secs]
-        local_bpms = estimate_local_bpm(onset_secs, grid0, bpm)
-        warped = warp_onsets(onset_secs, local_bpms, bpm)
-        return [round(t / s) for t in warped]
+    # Stage 1: Drift correction — find the effective BPM that best aligns
+    # onsets to even (8th-note) grid positions.  Search is narrow (±1%)
+    # to avoid accidentally snapping to a wrong tempo.
+    effective_bpm = _refine_bpm_for_grid(onset_secs, bpm)
+    s_eff = 60.0 / effective_bpm / 4
 
-    return [round(t / s) for t in onset_secs]
+    if len(onset_secs) >= 4:
+        grid0 = [round(t / s_eff) for t in onset_secs]
+        local_bpms = estimate_local_bpm(onset_secs, grid0, effective_bpm)
+        warped = warp_onsets(onset_secs, local_bpms, effective_bpm)
+        return [round(t / s_eff) for t in warped]
+
+    return [round(t / s_eff) for t in onset_secs]
+
+
+def _refine_bpm_for_grid(onset_secs: list[float], nominal_bpm: float,
+                          max_pct: float = 1.5, step: float = 0.01) -> float:
+    """Find the effective BPM (within ±max_pct% of nominal) that maximizes
+    the number of onsets landing on 8th-note grid positions (even grid16).
+
+    This corrects for systematic drift caused by fall-speed calibration
+    errors in the detector.  The search range is kept tight to avoid
+    accidentally locking onto a harmonic (double/half time).
+
+    Returns the refined BPM, or nominal_bpm if no improvement is found.
+    """
+    if len(onset_secs) < 10:
+        return nominal_bpm
+
+    low = nominal_bpm * (1 - max_pct / 100)
+    high = nominal_bpm * (1 + max_pct / 100)
+
+    best_bpm = nominal_bpm
+    s_nom = 60.0 / nominal_bpm / 4
+    best_on_grid = sum(1 for t in onset_secs if round(t / s_nom) % 2 == 0)
+
+    candidate = low
+    while candidate <= high:
+        s16 = 60.0 / candidate / 4
+        on_grid = sum(1 for t in onset_secs if round(t / s16) % 2 == 0)
+        if on_grid > best_on_grid:
+            best_on_grid = on_grid
+            best_bpm = candidate
+        candidate += step
+
+    return round(best_bpm, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +233,11 @@ def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
     return positions
 
 
-def estimate_local_bpm(onset_secs, grid_positions, nominal_bpm):
-    """Estimate a smooth per-note BPM curve from Viterbi grid positions.
+def estimate_local_bpm(onset_secs: list[float], grid_positions: list[int], nominal_bpm: float) -> list[float]:
+    """Estimate a smooth per-note BPM curve from grid positions.
 
-    Uses median filtering + rate limiting to reject rhythmic patterns
-    (triplets, syncopation) while following gradual tempo drift.
+    Uses median filtering + rate limiting to reject bad estimates from
+    misquantized grid positions while following gradual tempo drift.
     """
     n = len(onset_secs)
     if n < 2:
@@ -204,7 +246,7 @@ def estimate_local_bpm(onset_secs, grid_positions, nominal_bpm):
     s = 60.0 / nominal_bpm / 4  # nominal 16th duration
 
     # Compute implied BPM from each interval
-    raw_bpms = [nominal_bpm]  # first note has no prior interval
+    raw_bpms: list[float] = [nominal_bpm]  # first note has no prior interval
     for i in range(1, n):
         interval = onset_secs[i] - onset_secs[i - 1]
         grid_step = grid_positions[i] - grid_positions[i - 1]
@@ -217,20 +259,19 @@ def estimate_local_bpm(onset_secs, grid_positions, nominal_bpm):
     # Median filter (window=7) to remove outlier BPM values
     WINDOW = 7
     half = WINDOW // 2
-    filtered = []
+    filtered: list[float] = []
     for i in range(n):
         lo = max(0, i - half)
         hi = min(n, i + half + 1)
         filtered.append(statistics.median(raw_bpms[lo:hi]))
 
     # Rate limiter: clamp BPM change per note
-    # Max ~0.5% per beat; convert to per-note using median grid step
     median_step = statistics.median(
         max(1, grid_positions[i] - grid_positions[i - 1])
         for i in range(1, n)
     ) if n > 1 else 4
-    max_delta = 0.005 * nominal_bpm * median_step / 4  # per note
-    limited = [filtered[0]]
+    max_delta = 0.005 * nominal_bpm * median_step / 4
+    limited: list[float] = [filtered[0]]
     for i in range(1, n):
         prev = limited[-1]
         clamped = max(prev - max_delta, min(prev + max_delta, filtered[i]))
@@ -239,7 +280,7 @@ def estimate_local_bpm(onset_secs, grid_positions, nominal_bpm):
     return limited
 
 
-def warp_onsets(onset_secs, local_bpms, nominal_bpm):
+def warp_onsets(onset_secs: list[float], local_bpms: list[float], nominal_bpm: float) -> list[float]:
     """Warp onset times to compensate for tempo drift.
 
     Transforms onsets so that under constant nominal_bpm, the Viterbi
