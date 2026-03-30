@@ -540,8 +540,14 @@ def measure_fall_speed(cap, y_min, y_max):
 
 
 def _build_x_to_pitch(note_map):
-    """Build a function mapping x-coordinate to MIDI pitch."""
+    """Build a function mapping x-coordinate to MIDI pitch.
+
+    Returns None for x-positions outside the keyboard range (rejects artifacts
+    from progress bars, UI elements, etc. at the frame edges).
+    """
     pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
+    x_min = pitches_sorted[0][1] - 20
+    x_max = pitches_sorted[-1][1] + 20
     boundaries = []
     for i, (midi, x) in enumerate(pitches_sorted):
         x_lo = (pitches_sorted[i - 1][1] + x) / 2.0 if i > 0 else x - 20
@@ -549,6 +555,8 @@ def _build_x_to_pitch(note_map):
         boundaries.append((midi, x_lo, x_hi, x))
 
     def x_to_pitch(cx):
+        if cx < x_min or cx > x_max:
+            return None
         for midi, x_lo, x_hi, _ in boundaries:
             if x_lo <= cx <= x_hi:
                 return midi
@@ -623,13 +631,15 @@ def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
                     cx = (sx + x) / 2.0
                     if bw >= min_run_width and x_margin < cx < w - x_margin:
                         pitch = x_to_pitch(cx)
-                        current.add((pitch, color_name))
+                        if pitch is not None:
+                            current.add((pitch, color_name))
                     in_run = False
             if in_run and w - sx >= min_run_width:
                 cx = (sx + w) / 2.0
                 if x_margin < cx < w - x_margin:
                     pitch = x_to_pitch(cx)
-                    current.add((pitch, color_name))
+                    if pitch is not None:
+                        current.add((pitch, color_name))
 
         # New onsets
         for key in current:
@@ -780,6 +790,8 @@ def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
         t_now = fi / fps
         for cx, bw, bh, y_bot, color_name in blocks:
             pitch = x_to_pitch(cx)
+            if pitch is None:
+                continue
             # Project onset: how long until this block's bottom reaches keyboard
             onset_sec = t_now + max(0, onset_ref_y - y_bot) / px_per_sec
             dur_sec = bh / px_per_sec
@@ -1131,7 +1143,22 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None):
     # Step 1: Find keyboard boundary
     print(f"\n--- Step 1: Finding keyboard boundary ---")
     kb_y = find_keyboard_y(cap)
+    # Skip the top UI bar (progress bar, song title, etc.) by finding the first
+    # row where saturated pixels span a wide portion of the frame (actual blocks),
+    # not just a narrow progress bar.
+    cap.set(cv2.CAP_PROP_POS_FRAMES, min(150, total - 1))
+    ret, _frame = cap.read()
     y_min = 5
+    if ret:
+        _hsv = cv2.cvtColor(_frame, cv2.COLOR_BGR2HSV)
+        for _y in range(0, kb_y // 2):
+            _row = _hsv[_y, :, :]
+            _sat = ((_row[:, 1] > 50) & (_row[:, 2] > 50)).sum()
+            # A real block row has saturated pixels spread across the frame;
+            # a progress bar has fewer, concentrated at the left edge.
+            if _sat > w * 0.05:  # >5% of frame width
+                y_min = _y
+                break
     # Scan the full waterfall area but exclude a small band near the keyboard
     # where glow contaminates block detection. 50px margin is enough.
     y_max = max(y_min + 10, kb_y - 50)
