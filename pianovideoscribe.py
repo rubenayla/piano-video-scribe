@@ -429,10 +429,10 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
         # Video-only mode (min_midi_note defaults to 21).
         # Partial Synthesia keyboards typically start around C2-C3.
         # Estimate from keyboard size: fewer keys → higher starting octave.
-        if n_white >= 28:
-            c_midi = 36   # C2 — typical 4-5 octave keyboard
-        elif n_white >= 20:
-            c_midi = 48   # C3 — typical 3-4 octave keyboard
+        if n_white >= 20:
+            c_midi = 36   # C2 — typical 3+ octave keyboard
+        elif n_white >= 14:
+            c_midi = 48   # C3 — 2-3 octave keyboard
         else:
             c_midi = 60   # C4 — small keyboard
     else:

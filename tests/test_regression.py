@@ -249,6 +249,8 @@ class TestTest4Regression:
 
 # ============================================================================
 # Ground truth integrity checks (these test the GT files, not the pipeline)
+# Ground truth verified by ear: test3 (2026-03-30), test4 (2026-03-30),
+#   test7 (2026-03-30), test8 (2026-03-30)
 # ============================================================================
 
 class TestGroundTruthIntegrity:

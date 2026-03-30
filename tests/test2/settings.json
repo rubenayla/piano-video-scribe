@@ -4,6 +4,5 @@
   "frame": 5,
   "right_hand": "monophonic",
   "left_hand": "monophonic",
-  "transpose": 0,
-  "detector": "keys"
+  "transpose": 0
 }
