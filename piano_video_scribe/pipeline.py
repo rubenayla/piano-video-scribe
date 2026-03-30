@@ -120,8 +120,10 @@ def main():
         cap.release()
         from piano_video_scribe.detectors.falling_blocks import detect_falling_notes_pipeline
         fb_kwargs = {}
-        if getattr(args, 'glow_margin', None) is not None:
-            fb_kwargs['glow_margin'] = args.glow_margin
+        for fb_key in ('glow_margin', 's_min', 's_min_per_color'):
+            val = getattr(args, fb_key, None)
+            if val is not None:
+                fb_kwargs[fb_key] = val
         video_notes = detect_falling_notes_pipeline(args.video, None, **fb_kwargs)
         video_notes.sort(key=lambda n: n[2])  # sort by onset time
 

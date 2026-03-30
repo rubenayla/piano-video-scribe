@@ -48,12 +48,9 @@ def detect_blocks_in_frame(hsv, y_min, y_max, colors=None):
 
     for ci, color in enumerate(colors):
         mask = make_color_mask(region, color).astype(np.uint8) * 255
-        # Erode horizontally to separate adjacent blocks that touch.
-        # A 5x1 kernel removes 2px from each side, breaking bridges
-        # between blocks on neighboring keys (e.g. C#5/D5 stacked
-        # vertically in midi2video) while preserving block height.
-        erode_kernel = np.ones((1, 5), dtype=np.uint8)
-        mask = cv2.erode(mask, erode_kernel, iterations=1)
+        # Erode horizontally to separate adjacent keys.
+        erode_h = np.ones((1, 5), dtype=np.uint8)
+        mask = cv2.erode(mask, erode_h, iterations=1)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
@@ -1175,8 +1172,17 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
     # Step 1b: Auto-detect block colors
     print(f"\n--- Step 1b: Detecting block colors ---")
     colors = auto_detect_colors(cap, y_min, y_max)
+    # Apply s_min overrides from settings.
+    # Global s_min applies to all colors; per-color overrides (keyed by color
+    # name like "h46" or "h108") take priority.
+    s_min_global = kwargs.get('s_min')
+    s_min_per_color = kwargs.get('s_min_per_color', {})
     for c in colors:
-        print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']})")
+        if c['name'] in s_min_per_color:
+            c['s_min'] = s_min_per_color[c['name']]
+        elif s_min_global is not None:
+            c['s_min'] = s_min_global
+        print(f"  {c['name']}: H={c['h_min']}-{c['h_max']} (center={c['h_center']}, s_min={c.get('s_min', 80)})")
 
     # Step 2: Build pitch map.
     # Try block-based first (uses actual block positions, most accurate).

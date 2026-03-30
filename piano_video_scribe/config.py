@@ -89,7 +89,8 @@ Examples:
             settings = json.load(f)
         SETTINGS_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
                          'left_hand', 'start_time', 'end_time', 'start_beat', 'config',
-                         'time_sig', 'transpose', 'detector', 'glow_margin']
+                         'time_sig', 'transpose', 'detector', 'glow_margin', 's_min',
+                         's_min_per_color']
         for key in SETTINGS_KEYS:
             if key in settings:
                 # Only override if the CLI didn't explicitly set it

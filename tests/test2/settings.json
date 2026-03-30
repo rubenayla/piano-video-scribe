@@ -5,5 +5,9 @@
   "right_hand": "monophonic",
   "left_hand": "monophonic",
   "transpose": 0,
-  "glow_margin": 100
+  "glow_margin": 100,
+  "s_min_per_color": {
+    "h46": 145,
+    "h108": 80
+  }
 }
