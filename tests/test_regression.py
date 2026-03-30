@@ -120,6 +120,7 @@ class TestTest2Regression:
 
 # ============================================================================
 # test3: Timing offset and rapid note detection
+# Ground truth verified by ear on 2026-03-30
 # ============================================================================
 
 class TestTest3Regression:
@@ -183,6 +184,7 @@ class TestTest5Regression:
 
 # ============================================================================
 # test7: Faded (Alan Walker) — no C#, correct hand separation
+# Ground truth verified by ear on 2026-03-30
 # ============================================================================
 
 class TestTest7Regression:
@@ -223,6 +225,7 @@ class TestTest7Regression:
 
 # ============================================================================
 # test4: Should remain perfect (baseline)
+# Ground truth verified by ear on 2026-03-30
 # ============================================================================
 
 class TestTest4Regression:
