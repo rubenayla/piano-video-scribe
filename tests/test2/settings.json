@@ -2,12 +2,7 @@
   "bpm": 81,
   "green_hand": "right",
   "frame": 5,
-  "right_hand": "monophonic",
-  "left_hand": "monophonic",
-  "transpose": 0,
-  "glow_margin": 100,
-  "s_min_per_color": {
-    "h46": 145,
-    "h108": 80
-  }
+  "right_hand": "no-overlap",
+  "left_hand": "no-overlap",
+  "transpose": 0
 }

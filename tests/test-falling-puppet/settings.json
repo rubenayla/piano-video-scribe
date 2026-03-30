@@ -7,6 +7,5 @@
   "left_hand": "no-overlap",
   "start_beat": 7.0,
   "time_sig": "6/8",
-  "transpose": 0,
-  "detector": "falling-blocks"
+  "transpose": 0
 }

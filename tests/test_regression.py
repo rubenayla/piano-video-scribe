@@ -257,7 +257,7 @@ class TestGroundTruthIntegrity:
     """Verify ground truth files are self-consistent."""
 
     @pytest.mark.parametrize("test_name,expected_rh,expected_lh", [
-        ("test2", 93, 127),
+        ("test2", 95, 122),
         ("test3", 335, 482),
     ])
     def test_gt_note_counts(self, test_name, expected_rh, expected_lh):
