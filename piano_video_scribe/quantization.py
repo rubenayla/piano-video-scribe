@@ -8,6 +8,30 @@ import statistics
 
 
 # ---------------------------------------------------------------------------
+# Simple round-to-nearest quantizer (default)
+# ---------------------------------------------------------------------------
+
+def quantize_onsets_simple(onset_secs, bpm):
+    """Snap each onset independently to the nearest 16th-note grid position.
+
+    Always applies drift correction first (if enough notes), then rounds.
+    If there's no drift, the correction is zero and changes nothing.
+    """
+    s = 60.0 / bpm / 4  # 16th note duration
+    if not onset_secs:
+        return []
+
+    if len(onset_secs) >= 4:
+        # Always correct for drift — if there's none, warp is a no-op.
+        grid0 = [round(t / s) for t in onset_secs]
+        local_bpms = estimate_local_bpm(onset_secs, grid0, bpm)
+        warped = warp_onsets(onset_secs, local_bpms, bpm)
+        return [round(t / s) for t in warped]
+
+    return [round(t / s) for t in onset_secs]
+
+
+# ---------------------------------------------------------------------------
 # Tick conversion & quantization
 # ---------------------------------------------------------------------------
 
@@ -116,11 +140,13 @@ def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
         interval = onset_secs[i + 1] - onset_secs[i]
         ratio = interval / s
         centre = round(ratio)
+        # Allow step=0 for chord notes (interval < half a grid unit)
+        min_step = 0 if ratio < 0.5 else 1
         candidates = set()
-        for c in range(max(1, centre - 2), centre + 3):
+        for c in range(max(min_step, centre - 2), centre + 3):
             candidates.add(c)
-        candidates.add(max(1, math.floor(ratio)))
-        candidates.add(math.ceil(ratio))
+        candidates.add(max(min_step, math.floor(ratio)))
+        candidates.add(max(min_step, math.ceil(ratio)))
 
         for pos, (cost, _) in dp[i].items():
             for k in candidates:

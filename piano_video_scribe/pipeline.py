@@ -18,7 +18,7 @@ from piano_video_scribe.color import (
 )
 from piano_video_scribe.quantization import (
     make_tick_converters, quantize_tick, quantize_tick_smart,
-    quantize_onsets_pll, quantize_onsets_adaptive,
+    quantize_onsets_pll, quantize_onsets_adaptive, quantize_onsets_simple,
 )
 from piano_video_scribe.midi_output import remove_overlaps, make_monophonic, build_track
 from piano_video_scribe.visualization import generate_summary_image
@@ -287,35 +287,20 @@ def main():
             offsets = [video_notes[i][3] - first_onset for i in indices]
             s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
 
-            # Group chord notes: notes within 50ms share the same onset
-            CHORD_THRESH = 0.050  # seconds
-            groups = []  # [(representative_onset, [member_indices])]
-            for idx, onset in enumerate(onsets):
-                if groups and onset - onsets[groups[-1][1][0]] <= CHORD_THRESH:
-                    groups[-1][1].append(idx)
-                else:
-                    groups.append((onset, [idx]))
-
-            # Quantize representative onsets.
-            # Shift onsets so the hand's first note starts at t=0 for the
-            # Viterbi (it always starts at grid 0). Then add back the offset
-            # so both hands stay on the same absolute timeline.
-            rep_onsets = [g[0] for g in groups]
-            hand_t0 = rep_onsets[0]
-            rep_onsets_shifted = [t - hand_t0 for t in rep_onsets]
-            if subdivisions == 4:
-                rep_grid = quantize_onsets_adaptive(rep_onsets_shifted, OUT_BPM)
+            # Simple quantizer: round each onset to nearest grid position.
+            # No drift, no inter-note dependencies. Use 'viterbi' quantizer
+            # setting to switch to the adaptive Viterbi if needed.
+            quantizer = getattr(args, 'quantizer', None) or 'simple'
+            if quantizer == 'simple':
+                on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
+            elif quantizer == 'viterbi':
+                hand_t0 = onsets[0]
+                onsets_shifted = [t - hand_t0 for t in onsets]
+                on_g = list(quantize_onsets_adaptive(onsets_shifted, OUT_BPM))
+                hand_grid_offset = round(hand_t0 / s)
+                on_g = [p + hand_grid_offset for p in on_g]
             else:
-                rep_grid = quantize_onsets_pll(rep_onsets_shifted, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
-            # Add back the offset: hand_t0 seconds = hand_t0/s grid units
-            hand_grid_offset = round(hand_t0 / s)
-            rep_grid = [p + hand_grid_offset for p in rep_grid]
-
-            # Expand back: all members of a chord group share the same grid position
-            on_g = [0] * len(onsets)
-            for gi, (_, members) in enumerate(groups):
-                for mi in members:
-                    on_g[mi] = rep_grid[gi]
+                on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
 
             # Derive offset grid from onset grid + quantized duration
             off_g = []

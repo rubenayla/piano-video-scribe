@@ -137,6 +137,9 @@ Examples:
     p.add_argument('--detector', choices=['keys', 'falling-blocks'], default=None,
                    help='Note detection method: falling-blocks (default, detects notes from '
                         'falling colored blocks) or keys (key-lighting saturation fallback)')
+    p.add_argument('--quantizer', choices=['simple', 'viterbi'], default=None,
+                   help='Quantization method: simple (default, round-to-nearest) or '
+                        'viterbi (adaptive DP, handles tempo drift but can accumulate error)')
     p.add_argument('--glow-margin', type=int, default=None,
                    help='Falling-blocks detector: vertical margin above keyboard for glow '
                         'filtering (pixels, default: 50)')

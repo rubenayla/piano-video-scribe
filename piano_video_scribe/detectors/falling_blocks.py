@@ -935,26 +935,12 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
 
     # --- 2-4. Per-frame detection with tracking ---
     active_tracks = []  # list of track dicts
-    finished_notes = []  # (pitch, color, onset, offset)
+    closed_tracks = []  # raw track dicts kept for fall-speed refinement
 
     def _close_track(track):
-        """Close a track and emit a note if long enough."""
-        if not track['onset_predictions']:
-            return
-        onset = float(np.median(track['onset_predictions']))
-        # Duration from unclipped observations
-        unclipped_bhs = [
-            bh for _, y_bot, bh in track['observations']
-            if y_bot < y_max - 2 and (y_bot - bh) > y_min + 2
-        ]
-        if unclipped_bhs:
-            duration = float(np.median(unclipped_bhs)) / px_per_sec
-        else:
-            all_bhs = [bh for _, _, bh in track['observations']]
-            duration = float(np.median(all_bhs)) / px_per_sec
-        if duration >= min_duration:
-            finished_notes.append((track['pitch'], track['color'],
-                                   onset, onset + duration))
+        """Close a track — store raw data for later onset computation."""
+        if track['observations']:
+            closed_tracks.append(track)
 
     for fi in range(0, total, sample_step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
@@ -988,14 +974,10 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
                     best_dist = dist
                     best_idx = ti
 
-            # Onset prediction for this observation
-            onset_pred = fi / fps + max(0, onset_ref_y - y_bot) / px_per_sec
-
             if best_idx is not None:
                 # Update existing track
                 track = active_tracks[best_idx]
                 track['observations'].append((fi, y_bot, bh))
-                track['onset_predictions'].append(onset_pred)
                 track['last_frame'] = fi
                 track['last_y_bot'] = y_bot
                 matched_track_indices.add(best_idx)
@@ -1005,7 +987,6 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
                     'pitch': pitch,
                     'color': color_name,
                     'observations': [(fi, y_bot, bh)],
-                    'onset_predictions': [onset_pred],
                     'last_frame': fi,
                     'last_y_bot': y_bot,
                 })
@@ -1022,16 +1003,88 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
 
         if fi % 500 == 0 and fi > 0:
             print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
-                  f"— {len(finished_notes)} notes, {len(active_tracks)} active tracks")
+                  f"— {len(closed_tracks)} tracks closed, {len(active_tracks)} active")
 
     # --- 6. Close remaining tracks ---
     for track in active_tracks:
         _close_track(track)
     active_tracks = []
 
+    # --- 6b. Refine fall speed from tracking data ---
+    # Each track with enough observations gives a precise local speed estimate
+    # via linear regression on (frame, y_bot). The median of per-track slopes
+    # is robust to outliers and more accurate than the initial frame-pair
+    # measurement from measure_fall_speed().
+    track_speeds = []
+    for track in closed_tracks:
+        obs = track['observations']
+        if len(obs) < 3:
+            continue
+        # Use only unclipped observations (block fully inside visible area)
+        # to avoid edge effects at y_min/y_max boundaries
+        unclipped = [(fi, yb) for fi, yb, bh in obs
+                     if yb < y_max - 2 and (yb - bh) > y_min + 2]
+        if len(unclipped) < 3:
+            unclipped = [(fi, yb) for fi, yb, _ in obs]
+        if len(unclipped) < 3:
+            continue
+        frames_arr = np.array([fi for fi, _ in unclipped], dtype=np.float64)
+        yb_arr = np.array([yb for _, yb in unclipped], dtype=np.float64)
+        frame_span = frames_arr[-1] - frames_arr[0]
+        if frame_span < 5 * sample_step:
+            continue  # too short for a reliable estimate
+        # Linear regression: slope = sum((x-mx)(y-my)) / sum((x-mx)^2)
+        mean_f = frames_arr.mean()
+        mean_y = yb_arr.mean()
+        denom = np.dot(frames_arr - mean_f, frames_arr - mean_f)
+        if denom == 0:
+            continue
+        slope = float(np.dot(frames_arr - mean_f, yb_arr - mean_y) / denom)
+        if slope <= 0:
+            continue  # block not moving down, skip
+        track_speeds.append(slope)
+
+    if len(track_speeds) >= 10:
+        refined_speed = float(np.median(track_speeds))
+        print(f"  Refined fall speed from {len(track_speeds)} tracks: "
+              f"{refined_speed:.4f} px/frame (was {fall_speed:.4f}, "
+              f"delta={refined_speed - fall_speed:+.4f}, "
+              f"{100*(refined_speed - fall_speed)/fall_speed:+.3f}%)")
+        fall_speed = refined_speed
+        px_per_sec = fall_speed * fps
+    else:
+        print(f"  Fall speed refinement: not enough tracks ({len(track_speeds)}), "
+              f"keeping {fall_speed:.4f} px/frame")
+
+    # --- 6c. Compute notes from closed tracks using (refined) fall speed ---
+    finished_notes = []
+    for track in closed_tracks:
+        obs = track['observations']
+        # Recompute onset predictions with the refined speed
+        onset_preds = []
+        for fi, y_bot, bh in obs:
+            onset_pred = fi / fps + max(0, onset_ref_y - y_bot) / px_per_sec
+            onset_preds.append(onset_pred)
+        if not onset_preds:
+            continue
+        onset = float(np.median(onset_preds))
+        # Duration from unclipped observations
+        unclipped_bhs = [
+            bh for _, y_bot, bh in obs
+            if y_bot < y_max - 2 and (y_bot - bh) > y_min + 2
+        ]
+        if unclipped_bhs:
+            duration = float(np.median(unclipped_bhs)) / px_per_sec
+        else:
+            all_bhs = [bh for _, _, bh in obs]
+            duration = float(np.median(all_bhs)) / px_per_sec
+        if duration >= min_duration:
+            finished_notes.append((track['pitch'], track['color'],
+                                   onset, onset + duration))
+
     print(f"  {len(finished_notes)} raw notes from {total // sample_step} frames")
 
-    # --- 5. Hand assignment ---
+    # --- 7. Hand assignment ---
     color_pitches = defaultdict(list)
     for pitch, color_name, onset, offset in finished_notes:
         color_pitches[color_name].append(pitch)
