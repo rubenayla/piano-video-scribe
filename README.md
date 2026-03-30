@@ -23,48 +23,57 @@ open -a "MuseScore 4" output.mid
 
 The pipeline reads falling colored blocks from the video to extract notes, then quantizes them to a musical grid.
 
-### 1. Keyboard detection
+### 1. Keyboard detection — [`piano_video_scribe/keyboard.py`](piano_video_scribe/keyboard.py)
 
-Find the keyboard in a reference frame to build a pitch map (x-pixel -> MIDI note).
+Find the keyboard in a reference frame to build a pitch map (x-pixel → MIDI note).
 
-- [`detect_keyboard()`](pianovideoscribe.py#L63) — Scan for regularly-spaced white keys and black keys above them using HSV thresholding.
-- [`find_first_c()`](pianovideoscribe.py#L356) — Identify which white key is C by matching the black key grouping pattern (2-3-2-3...).
-- [`build_note_x_map()`](pianovideoscribe.py#L404) — Assign MIDI note numbers to x-positions.
+- `detect_keyboard()` — Scan for regularly-spaced white keys and black keys using HSV thresholding.
+- `find_first_c()` — Identify which white key is C by matching the black key grouping pattern (2-3-2-3...).
+- `build_note_x_map()` — Assign MIDI note numbers to x-positions based on keyboard size and octave heuristics.
 
-### 2. Note detection (falling blocks)
+### 2. Note detection (falling blocks) — [`piano_video_scribe/detectors/falling_blocks.py`](piano_video_scribe/detectors/falling_blocks.py)
 
-Detect colored block contours above the keyboard and project their positions to onset/offset times.
+Track colored blocks as they fall through the waterfall area, collecting onset predictions from every frame.
 
-- [`auto_detect_colors()`](detect_falling_blocks.py#L45) — Sample frames to find the two hand colors via hue histogram clustering.
-- [`detect_blocks_in_frame()`](detect_falling_blocks.py#L136) — HSV color masking + morphological erosion + OpenCV contour detection per frame.
-- [`measure_fall_speed()`](detect_falling_blocks.py#L607) — Track blocks across frame pairs to measure pixels/frame fall rate.
-- [`extract_notes_contour()`](detect_falling_blocks.py#L806) — Collect block observations across sampled frames, project onset times via `t = t_now + (keyboard_y - block_y) / speed`, chain-merge observations of the same block, deduplicate overlapping same-pitch notes.
-- [`_calibrate_note_map_with_blocks()`](detect_falling_blocks.py#L1104) — Affine correction aligning block x-positions to keyboard x-positions.
+**Block detection** (per frame):
+1. `auto_detect_colors()` — Sample frames to find the two hand colors via hue histogram clustering.
+2. `make_color_mask()` — HSV threshold: pixels matching hue range + saturation minimum → binary mask. Saturation threshold is configurable per color via `s_min_per_color` in settings.json (needed to separate rapid repeated notes whose gaps have lower saturation).
+3. Morphological erosion (horizontal 1×5 kernel) breaks bridges between adjacent keys.
+4. `cv2.findContours()` traces connected white regions → bounding rectangles.
+5. Size/shape filters reject UI elements, progress bars, and noise.
 
-### 3. Hand separation
+**Block tracking** across frames:
+- Each block is tracked by matching (pitch, color, expected y-position) across consecutive frames.
+- Every observation produces an independent onset prediction: `onset = t + (keyboard_y - y_bot) / fall_speed`.
+- The **median** of all predictions for a track gives the final onset — naturally rejecting outliers from clipped or glow-corrupted frames.
+- `measure_fall_speed()` — Measure fall rate (pixels/frame) from block displacement across frame pairs.
+
+**Configurable parameters** (via `settings.json`):
+- `glow_margin` — Pixels above keyboard to exclude from scan (avoids key-press glow artifacts, default 50).
+- `s_min_per_color` — Per-color saturation threshold, e.g. `{"h46": 145, "h108": 80}` for different block shades.
+
+### 3. Hand separation — [`piano_video_scribe/color.py`](piano_video_scribe/color.py)
 
 - Colors are auto-assigned: the color with higher average pitch = right hand, lower = left hand.
-- For the key-press detector: [`classify_hand()`](pianovideoscribe.py#L703) reads HSV color at the key position per frame.
+- Synthesia videos use two shades per hand (e.g. bright green + light green). Both share the same hue, differing only in saturation/brightness.
 
-### 4. Quantization
+### 4. Quantization — [`piano_video_scribe/quantization.py`](piano_video_scribe/quantization.py)
 
 Snap raw onset times to a musical grid (16th-note resolution).
 
-- [`quantize_onsets_viterbi()`](pianovideoscribe.py#L1128) — Viterbi DP finds the globally optimal grid assignment minimizing interval + absolute-position error.
-- [`quantize_onsets_adaptive()`](pianovideoscribe.py#L1268) — Two-pass adaptive tempo tracking: first Viterbi pass estimates a smooth local BPM curve via [`estimate_local_bpm()`](pianovideoscribe.py#L1201), then [`warp_onsets()`](pianovideoscribe.py#L1250) compensates for drift before a second Viterbi pass. Handles videos where tempo drifts even slightly (e.g., 89 vs 90 BPM).
+- `quantize_onsets_viterbi()` — Viterbi DP finds the globally optimal grid assignment minimizing interval + absolute-position error.
+- `quantize_onsets_adaptive()` — Two-pass adaptive tempo tracking: first Viterbi pass estimates a smooth local BPM curve via `estimate_local_bpm()`, then `warp_onsets()` compensates for drift before a second Viterbi pass. Handles tempo changes mid-piece (e.g. ritardando, fermata).
 - Chord notes within 50ms are grouped so the quantizer places them simultaneously.
-- Each hand's onsets are shifted to start at t=0 before quantizing to prevent absolute-position cost from distorting intervals.
 
-### 5. Post-processing
+### 5. Post-processing — [`piano_video_scribe/midi_output.py`](piano_video_scribe/midi_output.py)
 
-- [`make_monophonic()`](pianovideoscribe.py#L1449) — Keep only the highest (RH) or lowest (LH) note at each time.
-- [`remove_overlaps()`](pianovideoscribe.py#L1414) — Cut held notes at the next onset while preserving chords.
-- Auto-detect hand start offset when hands enter at different times.
+- `make_monophonic()` — Keep only the highest (RH) or lowest (LH) note at each time.
+- `remove_overlaps()` — Cut held notes at the next onset while preserving chords.
 - Transpose, key signature metadata (auto-detected via music21).
 
 ### 6. Output
 
-Two-track Type-1 MIDI (right hand + left hand) via [`build_track()`](pianovideoscribe.py#L1508).
+Two-track Type-1 MIDI (right hand + left hand) via `build_track()`.
 
 ## CLI arguments
 
