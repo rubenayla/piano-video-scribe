@@ -30,7 +30,16 @@ def main():
     cfg = load_config(args.config)
 
     OUT_TPB = 960
+    # BPM refers to the beat unit from time_sig: quarter note in X/4,
+    # eighth note in X/8. Convert to quarter-note BPM internally.
     OUT_BPM = args.bpm
+    beat_unit = 4  # default: quarter note
+    if args.time_sig:
+        beat_unit = int(args.time_sig.split('/')[1])
+    if beat_unit == 8:
+        # BPM is in eighth notes — halve for quarter-note BPM
+        OUT_BPM = args.bpm / 2
+        print(f"  6/8 mode: eighth={args.bpm} BPM → quarter={OUT_BPM} BPM")
     OUT_US_PER_BEAT = int(60_000_000 / OUT_BPM)
     EIGHTH = OUT_TPB // 2     # ticks per 8th note
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
