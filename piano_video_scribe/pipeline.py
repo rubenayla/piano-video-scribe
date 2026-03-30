@@ -266,35 +266,25 @@ def main():
         right_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 0]
         left_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 1]
 
-        # Quantize each hand with its own quantizer and grid
-        # start_beat shifts onsets so the first note lands on the right beat.
-        # Each hand uses its own first onset as reference, and start_beat
-        # only applies to the RH (melody hand) — LH follows from there.
-        # Compute beat_pre_offset so the RH's first note lands on start_beat.
-        # The RH first onset relative to first_onset may be > 0 if LH starts earlier.
-        rh_first = video_notes[right_indices[0]][2] if right_indices else first_onset
-        rh_rel = rh_first - first_onset  # RH's offset from the global first note
+        # Quantize both hands on a SINGLE shared timeline.
+        # All onsets are relative to first_onset (the first note in the video,
+        # regardless of hand). start_beat adds a common grid offset AFTER
+        # quantization so the first note lands on the right beat in the measure.
         effective_start_beat = args.start_beat if args.start_beat is not None else 1.0
-        beat_target_sec = (effective_start_beat - 1.0) * (60.0 / OUT_BPM)
-        beat_pre_offset = beat_target_sec - rh_rel
-        if abs(beat_pre_offset) > 0.001:
-            print(f"  start_beat={effective_start_beat}, pre-offset={beat_pre_offset:.4f}s")
+        # start_grid_offset: grid units to add after quantization
+        # (subdivisions per beat * beats of silence before first note)
+        start_grid_offset = int(round((effective_start_beat - 1.0) * RIGHT_SUB))
+        if start_grid_offset > 0:
+            print(f"  start_beat={effective_start_beat}, grid_offset={start_grid_offset}")
 
-        def quantize_hand(indices, subdivisions, target_start_grid=0):
-            """Quantize note onsets for one hand.
-
-            target_start_grid: the grid position where the first note should
-            land.  The Viterbi quantizer always starts at 0, so we offset all
-            positions afterward.
-            """
+        def quantize_hand(indices, subdivisions):
+            """Quantize note onsets for one hand on the shared timeline."""
+            # All times relative to first_onset — shared reference for both hands
             onsets = [video_notes[i][2] - first_onset for i in indices]
             offsets = [video_notes[i][3] - first_onset for i in indices]
             s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
 
             # Group chord notes: notes within 50ms share the same onset
-            # for quantization purposes. The Viterbi quantizer requires
-            # min step=1 between consecutive entries, so chord notes sent
-            # individually would be spread to consecutive 16th positions.
             CHORD_THRESH = 0.050  # seconds
             groups = []  # [(representative_onset, [member_indices])]
             for idx, onset in enumerate(onsets):
@@ -303,21 +293,12 @@ def main():
                 else:
                     groups.append((onset, [idx]))
 
-            # Quantize representative onsets only.
-            # Shift to start at t=0 so Viterbi's absolute-position cost
-            # doesn't distort intervals when a hand enters late.
+            # Quantize representative onsets.
             rep_onsets = [g[0] for g in groups]
-            hand_t0 = rep_onsets[0]
-            rep_onsets_shifted = [t - hand_t0 for t in rep_onsets]
             if subdivisions == 4:
-                rep_grid = quantize_onsets_adaptive(rep_onsets_shifted, OUT_BPM)
+                rep_grid = quantize_onsets_adaptive(rep_onsets, OUT_BPM)
             else:
-                rep_grid = quantize_onsets_pll(rep_onsets_shifted, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
-
-            # Offset so the first note lands at target_start_grid
-            grid_offset = target_start_grid - rep_grid[0]
-            if grid_offset != 0:
-                rep_grid = [p + grid_offset for p in rep_grid]
+                rep_grid = quantize_onsets_pll(rep_onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
 
             # Expand back: all members of a chord group share the same grid position
             on_g = [0] * len(onsets)
@@ -333,28 +314,18 @@ def main():
                 off_g.append(on_pos + dur_grid)
             return on_g, off_g
 
-        # Compute target grid position for each hand's first note.
-        # Grid units = subdivisions per beat.
-        if args.start_beat is not None:
-            # Manual override: RH lands on the specified beat, LH at beat 1
-            rh_target = int(round((args.start_beat - 1.0) * RIGHT_SUB))
-            lh_target = 0
-        else:
-            # Auto-detect: compute offset from actual time gap between hands
-            rh_first_sec = video_notes[right_indices[0]][2] if right_indices else first_onset
-            lh_first_sec = video_notes[left_indices[0]][2] if left_indices else first_onset
-            gap_sec = rh_first_sec - lh_first_sec  # positive = RH enters later
-            beat_dur = 60.0 / OUT_BPM
-            rh_gap_grid = gap_sec / (beat_dur / RIGHT_SUB)
-            lh_gap_grid = gap_sec / (beat_dur / LEFT_SUB)
-            rh_target = max(0, int(round(rh_gap_grid)))
-            lh_target = max(0, int(round(-lh_gap_grid)))
-            if rh_target > 0 or lh_target > 0:
-                print(f"  Auto-detected hand offset: RH grid={rh_target}, LH grid={lh_target} "
-                      f"(gap={gap_sec:.3f}s)")
+        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
+        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
 
-        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB, rh_target)
-        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB, lh_target)
+        # Apply start_beat offset: shift all grid positions so the first note
+        # of the piece lands on the right beat in the measure.
+        if start_grid_offset > 0:
+            r_on_grid = [p + start_grid_offset for p in r_on_grid]
+            r_off_grid = [p + start_grid_offset for p in r_off_grid]
+            # Scale offset for LH if it uses different subdivisions
+            lh_grid_offset = int(round((effective_start_beat - 1.0) * LEFT_SUB))
+            l_on_grid = [p + lh_grid_offset for p in l_on_grid]
+            l_off_grid = [p + lh_grid_offset for p in l_off_grid]
 
         right_events = []
         left_events = []
