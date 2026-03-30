@@ -194,3 +194,39 @@ The adaptive quantizer (`quantize_onsets_adaptive`) produces correct grid positi
 One of these steps introduces a rounding error that accumulates to 1/16th. The chord grouping is the most likely suspect — if a chord group's representative onset is taken from the first note (which may be slightly early), the shifted onset could land on the wrong grid position.
 
 **Status:** Documented, not yet fixed. The quantizer core is correct; the bug is in the pipeline's quantize_hand() wrapper.
+
+## 2026-03-31 — Proposed updating verified ground truth tests instead of investigating detector discrepancy
+
+**What happened:** When falling-blocks detector gave different results than keys detector on test3/test4, agent proposed "updating the test expectations to match falling-blocks results." This would have destroyed ear-verified ground truths. The correct action is to compare both detectors' outputs against the actual music to determine which is correct — binary search debugging.
+
+**Root cause:** Context overload after a long debugging session (~50+ tool calls). Agent lost sight of the fundamental principle: tests represent verified truth. When code disagrees with tests, investigate the code, don't change the tests. The agent was in "make tests pass" mode instead of "make output correct" mode.
+
+**Prevention:**
+- NEVER update test expectations without re-verifying against the source material (video/audio)
+- When a detector change causes test failures, the FIRST step is to compare outputs and check which matches reality — not to assume the new code is right
+- This is binary search debugging: ground truth is one end, detector output is the other. Compare to find which side has the bug.
+
+## 2026-03-31 — Argparse default shadowed settings.json values, broke detector selection
+
+**What happened:** The regression test for test4 failed (73 RH notes, expected 80–110). test4's `settings.json` specifies `"detector": "keys"`, but the pipeline ignored it and ran with `falling-blocks` instead. This meant test4 ran with the wrong detector every time, and the auto-save bug then overwrote `settings.json` with `"detector": "falling-blocks"`, compounding the damage.
+
+**Root cause:** The config merge logic in `config.py` (line 177) only applies settings.json values when the corresponding CLI attribute is `None`:
+
+```python
+cli_val = getattr(args, key, None)
+if cli_val is None:
+    setattr(args, key, settings[key])
+```
+
+But `--detector` had `default='falling-blocks'` in its argparse definition — so `args.detector` was always `'falling-blocks'`, never `None`, even when the user didn't pass `--detector` on the command line. The settings file value was silently ignored every time.
+
+The same default already existed in `HARDCODED_DEFAULTS` (applied after settings merge), so argparse was redundantly setting the default *before* the settings file had a chance to override it.
+
+**The subtle trap:** Argparse defaults and explicit CLI arguments are indistinguishable via `getattr()`. Any argparse argument with a non-None default will shadow the corresponding settings.json value. This pattern affects ALL settings keys that have argparse defaults, not just `--detector`.
+
+**Fix:** Changed `--detector` argparse default from `'falling-blocks'` to `None`. The `HARDCODED_DEFAULTS` dict already provides the same fallback, but at the right point in the merge order: CLI arg → settings.json → hardcoded default.
+
+**Prevention:**
+- All argparse arguments that can be overridden by settings.json MUST use `default=None`. The actual default goes in `HARDCODED_DEFAULTS` only.
+- When adding new CLI arguments, check the merge order: `None` argparse default → settings.json fills it → `HARDCODED_DEFAULTS` fills anything still `None`.
+- If a test starts failing with "wrong detector" or "wrong parameter", check whether the settings file value is actually being applied — don't assume the merge works.
