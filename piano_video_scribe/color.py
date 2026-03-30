@@ -280,8 +280,8 @@ def make_color_mask(hsv_region, color):
     """Create a boolean mask for a detected color range."""
     h_min = color['h_min']
     h_max = color['h_max']
-    s_min = 80
-    v_min = 80
+    s_min = color.get('s_min', 80)
+    v_min = color.get('v_min', 80)
 
     if h_min > h_max:  # wraps around 0/180 (red)
         return (((hsv_region[:, :, 0] >= h_min) | (hsv_region[:, :, 0] <= h_max)) &

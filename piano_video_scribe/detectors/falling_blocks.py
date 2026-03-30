@@ -1159,9 +1159,10 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None):
             if _sat > w * 0.05:  # >5% of frame width
                 y_min = _y
                 break
-    # Scan the full waterfall area but exclude a small band near the keyboard
-    # where glow contaminates block detection. 50px margin is enough.
-    y_max = max(y_min + 10, kb_y - 50)
+    # Scan the waterfall area but exclude a generous band near the keyboard
+    # where key-press glow widens block contours and causes false detections
+    # on adjacent keys. 100px margin safely avoids the glow zone.
+    y_max = max(y_min + 10, kb_y - 100)
     print(f"  Keyboard at y={kb_y}")
     print(f"  Block region: y={y_min}..{y_max}")
 
