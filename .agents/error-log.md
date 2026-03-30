@@ -122,3 +122,19 @@
 - If you don't know something, say "I don't know." Don't guess and present it as fact.
 - Worktrees, running agents, and external processes are outside your visibility. Never claim to know their status.
 - When listing things for the user, present the raw information and let the user decide. Don't add judgments you can't back up.
+
+## 2026-03-30 — Presented broken pipeline output to user without verifying it first
+
+**What happened:** Multiple times during test2 ground truth validation:
+1. Presented pipeline output with 19 ghost A1 notes (progress bar artifacts) without checking.
+2. Presented output with phantom Db4 notes at m2 beat 3.25 and claimed they were "real notes from the video" when the user had already said they were wrong.
+3. Kept defending wrong output instead of listening to the user's corrections.
+4. Knew about remaining bugs (missing rapid repeats in m6, extra notes) but presented the .mid to the user anyway without disclosing the known issues upfront.
+
+**Root cause:** Violated AGENTS.md rule #1 ("Always verify the final output before giving it to the user"). Checked note names but didn't compare against the verified ground truth. When bugs were found, argued instead of fixing. When bugs were known, didn't disclose them before asking the user to listen.
+
+**Prevention:**
+- ALWAYS compare pipeline output against the verified GT before presenting a .mid to the user. List all differences.
+- If there are known issues, list them BEFORE giving the file path — don't make the user discover bugs you already know about.
+- When the user says something is wrong, trust them and fix it. Don't argue that the detector is "correct" when the user has listened to the actual music.
+- Never say "the detector is working correctly" when the output has wrong notes. The detector's job is to produce correct notes, period.
