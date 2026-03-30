@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from mido import MidiFile, MidiTrack, Message, MetaMessage
 
-from piano_video_scribe.config import parse_args, detect_bpm_from_video, load_config
+from piano_video_scribe.config import parse_args, detect_bpm_from_video, load_config, CONFIG_SECTIONS
 from piano_video_scribe.keyboard import (
     detect_keyboard, build_note_x_map, build_detector_regions,
 )
@@ -27,19 +27,13 @@ from piano_video_scribe.detectors.keys import extract_notes_from_video
 
 def main():
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, inline_config=getattr(args, '_inline_config', None))
 
     OUT_TPB = 960
-    # BPM refers to the beat unit from time_sig: quarter note in X/4,
-    # eighth note in X/8. Convert to quarter-note BPM internally.
+    # BPM always means quarter note = N, regardless of time signature.
+    # In 6/8, the user sets BPM to the quarter-note rate (e.g. 90),
+    # and each eighth note is half a quarter = 0.333s at BPM=90.
     OUT_BPM = args.bpm
-    beat_unit = 4  # default: quarter note
-    if args.time_sig:
-        beat_unit = int(args.time_sig.split('/')[1])
-    if beat_unit == 8:
-        # BPM is in eighth notes — halve for quarter-note BPM
-        OUT_BPM = args.bpm / 2
-        print(f"  6/8 mode: eighth={args.bpm} BPM → quarter={OUT_BPM} BPM")
     OUT_US_PER_BEAT = int(60_000_000 / OUT_BPM)
     EIGHTH = OUT_TPB // 2     # ticks per 8th note
     SIXTEENTH = OUT_TPB // 4  # ticks per 16th note
@@ -129,8 +123,8 @@ def main():
         cap.release()
         from piano_video_scribe.detectors.falling_blocks import detect_falling_notes_pipeline
         fb_kwargs = {}
-        for fb_key in ('glow_margin', 's_min', 's_min_per_color'):
-            val = getattr(args, fb_key, None)
+        for fb_key in ('glow_margin', 's_min', 's_min_per_color', 'sample_step'):
+            val = getattr(args, fb_key)
             if val is not None:
                 fb_kwargs[fb_key] = val
         video_notes = detect_falling_notes_pipeline(args.video, None, **fb_kwargs)
@@ -525,18 +519,22 @@ def main():
 
     # --- Auto-save settings.json next to the output MIDI ---
     settings_to_save = {}
-    SAVE_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                 'left_hand', 'start_time', 'end_time', 'start_beat', 'config',
-                 'time_sig', 'transpose', 'detector']
-    for key in SAVE_KEYS:
-        val = getattr(args, key, None)
+    # Save all non-None optional args (skip positionals and runtime-only flags)
+    skip_save = {'settings', 'dry_run', 'triplet', 'video', 'midi', 'output'}
+    for action in vars(args):
+        if action.startswith('_') or action in skip_save:
+            continue
+        val = getattr(args, action)
         if val is not None:
-            # Skip defaults that don't need saving
-            if key == 'start_beat' and val is None:
-                continue
-            if key == 'detector' and val == 'falling-blocks':
-                continue
-            settings_to_save[key] = val
+            settings_to_save[action] = val
+    # Embed resolved config sections inline (replaces separate config file pointer)
+    inline = getattr(args, '_inline_config', {})
+    if inline or args.config:
+        for section in CONFIG_SECTIONS:
+            if section in cfg:
+                settings_to_save[section] = cfg[section]
+        # Config file no longer needed when sections are inline
+        settings_to_save.pop('config', None)
     settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')
     with open(settings_path, 'w') as f:
         json.dump(settings_to_save, f, indent=2)

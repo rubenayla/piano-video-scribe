@@ -7,6 +7,65 @@ import sys
 
 import numpy as np
 
+# Keys that are allowed in JSON files but aren't pipeline parameters
+_METADATA_KEYS = {'name', 'notes'}
+
+# Sections that can appear in both settings.json and standalone config files
+CONFIG_SECTIONS = {'colors', 'sampling', 'keyboard'}
+
+
+def _derive_settings_keys(parser):
+    """Derive valid settings keys from argparse optional arguments."""
+    skip = {'help', 'settings', 'dry_run', 'triplet'}
+    keys = set()
+    for action in parser._actions:
+        if action.option_strings and action.dest not in skip:
+            keys.add(action.dest)
+    return keys
+
+
+def _warn_unknown_keys(data, valid_keys, source):
+    """Warn about unknown keys in a JSON file (catches typos)."""
+    unknown = set(data) - valid_keys - _METADATA_KEYS - CONFIG_SECTIONS
+    if unknown:
+        print(f"WARNING: Unknown keys in {source}: {sorted(unknown)}", file=sys.stderr)
+
+
+def _validate_hsv(color_dict, label):
+    """Validate HSV threshold bounds for a single color entry."""
+    errors = []
+    h_min = color_dict.get('h_min', 0)
+    h_max = color_dict.get('h_max', 179)
+    s_min = color_dict.get('s_min', 0)
+    v_min = color_dict.get('v_min', 0)
+    if not (0 <= h_min <= 179):
+        errors.append(f"{label}.h_min={h_min} out of range [0, 179]")
+    if not (0 <= h_max <= 179):
+        errors.append(f"{label}.h_max={h_max} out of range [0, 179]")
+    if h_min > h_max:
+        errors.append(f"{label}.h_min={h_min} > h_max={h_max}")
+    if not (0 <= s_min <= 255):
+        errors.append(f"{label}.s_min={s_min} out of range [0, 255]")
+    if not (0 <= v_min <= 255):
+        errors.append(f"{label}.v_min={v_min} out of range [0, 255]")
+    return errors
+
+
+def _validate_config(cfg):
+    """Validate config values (HSV ranges, sampling params). Returns error list."""
+    errors = []
+    for color_name, color_dict in cfg.get('colors', {}).items():
+        if isinstance(color_dict, dict):
+            errors.extend(_validate_hsv(color_dict, f"colors.{color_name}"))
+    sampling = cfg.get('sampling', {})
+    if sampling.get('y_offset_top', 0) < 0:
+        errors.append(f"sampling.y_offset_top={sampling['y_offset_top']} must be >= 0")
+    if sampling.get('y_offset_bot', 0) < 0:
+        errors.append(f"sampling.y_offset_bot={sampling['y_offset_bot']} must be >= 0")
+    if sampling.get('half_w', 1) <= 0:
+        errors.append(f"sampling.half_w={sampling['half_w']} must be > 0")
+    return errors
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -78,20 +137,38 @@ Examples:
     p.add_argument('--detector', choices=['keys', 'falling-blocks'], default=None,
                    help='Note detection method: falling-blocks (default, detects notes from '
                         'falling colored blocks) or keys (key-lighting saturation fallback)')
+    p.add_argument('--glow-margin', type=int, default=None,
+                   help='Falling-blocks detector: vertical margin above keyboard for glow '
+                        'filtering (pixels, default: 50)')
+    p.add_argument('--s-min', type=int, default=None,
+                   help='Falling-blocks detector: global saturation minimum override')
+    p.add_argument('--s-min-per-color', type=json.loads, default=None,
+                   help='Falling-blocks detector: per-color saturation minimums as JSON '
+                        '(e.g. \'{"green": 120}\')')
+    p.add_argument('--sample-step', type=int, default=None,
+                   help='Falling-blocks detector: frame sampling interval (default: 2)')
     p.add_argument('--dry-run', action='store_true',
                    help='Detect keyboard and print stats only — do not write output MIDI')
 
     args = p.parse_args()
 
+    # Derive valid keys from the parser itself — no separate list to maintain
+    valid_settings_keys = _derive_settings_keys(p)
+
     # --- Merge settings file (if provided) — fill None values from JSON ---
+    args._inline_config = {}
     if args.settings:
         with open(args.settings) as f:
             settings = json.load(f)
-        SETTINGS_KEYS = ['bpm', 'key', 'green_hand', 'frame', 'right_hand',
-                         'left_hand', 'start_time', 'end_time', 'start_beat', 'config',
-                         'time_sig', 'transpose', 'detector', 'glow_margin', 's_min',
-                         's_min_per_color']
-        for key in SETTINGS_KEYS:
+
+        # Extract config sections (colors, sampling, keyboard) for load_config
+        for section in CONFIG_SECTIONS:
+            if section in settings:
+                args._inline_config[section] = settings[section]
+
+        _warn_unknown_keys(settings, valid_settings_keys, args.settings)
+
+        for key in valid_settings_keys:
             if key in settings:
                 # Only override if the CLI didn't explicitly set it
                 cli_val = getattr(args, key, None)
@@ -182,12 +259,51 @@ def detect_bpm_from_video(video_path):
             os.unlink(tmp_path)
 
 
-def load_config(config_path):
-    """Load a JSON config file and return its contents as a dict.
+def _deep_merge(base, override):
+    """Deep-merge override into base (2 levels). Mutates base."""
+    for section in override:
+        if section not in base:
+            base[section] = override[section]
+        elif isinstance(base[section], dict) and isinstance(override[section], dict):
+            for key in override[section]:
+                if (isinstance(base[section].get(key), dict)
+                        and isinstance(override[section][key], dict)):
+                    base[section][key].update(override[section][key])
+                else:
+                    base[section][key] = override[section][key]
+        else:
+            base[section] = override[section]
 
-    Config files can override: colors (HSV thresholds for green/blue),
-    sampling zone (y offsets, half_w), and keyboard detection frame.
-    Missing keys fall back to defaults.
+
+# Valid top-level keys in a config/settings file's config sections
+_VALID_CONFIG_SECTION_KEYS = {
+    'colors': None,   # colors has dynamic keys (green/blue/right/left)
+    'sampling': {'y_offset_top', 'y_offset_bot', 'half_w'},
+    'keyboard': {'frame'},
+}
+
+
+def _warn_unknown_config_keys(cfg, source):
+    """Warn about unknown keys within config sections."""
+    unknown_sections = set(cfg) - CONFIG_SECTIONS - _METADATA_KEYS
+    if unknown_sections:
+        print(f"WARNING: Unknown config sections in {source}: "
+              f"{sorted(unknown_sections)}", file=sys.stderr)
+    for section, valid_keys in _VALID_CONFIG_SECTION_KEYS.items():
+        if section in cfg and valid_keys is not None and isinstance(cfg[section], dict):
+            bad = set(cfg[section]) - valid_keys
+            if bad:
+                print(f"WARNING: Unknown keys in {source} [{section}]: "
+                      f"{sorted(bad)}", file=sys.stderr)
+
+
+def load_config(config_path=None, inline_config=None):
+    """Load config with defaults, optional file, and optional inline overrides.
+
+    Precedence (lowest to highest): defaults < config_path < inline_config.
+
+    Config sections: colors (HSV thresholds), sampling (y offsets, half_w),
+    keyboard (detection frame).
     """
     defaults = {
         'colors': {
@@ -203,21 +319,23 @@ def load_config(config_path):
             'frame': 5,
         },
     }
-    if config_path is None:
-        return defaults
 
-    with open(config_path) as f:
-        cfg = json.load(f)
+    if config_path is not None:
+        with open(config_path) as f:
+            file_cfg = json.load(f)
+        _warn_unknown_config_keys(file_cfg, config_path)
+        _deep_merge(defaults, {k: v for k, v in file_cfg.items()
+                               if k in CONFIG_SECTIONS})
 
-    # Deep merge: config values override defaults (2 levels deep)
-    for section in defaults:
-        if section in cfg:
-            if isinstance(defaults[section], dict):
-                for key in cfg[section]:
-                    if isinstance(defaults[section].get(key), dict) and isinstance(cfg[section][key], dict):
-                        defaults[section][key].update(cfg[section][key])
-                    else:
-                        defaults[section][key] = cfg[section][key]
-            else:
-                defaults[section] = cfg[section]
+    if inline_config:
+        _deep_merge(defaults, {k: v for k, v in inline_config.items()
+                               if k in CONFIG_SECTIONS})
+
+    errors = _validate_config(defaults)
+    if errors:
+        print("ERROR: Invalid config values:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        sys.exit(1)
+
     return defaults

@@ -1435,7 +1435,8 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
     # Step 7: Extract notes via block tracking across frames
     print(f"\n--- Step 7: Extracting notes (tracking) ---")
     notes = extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
-                                   colors=colors, keyboard_y_for_onset=kb_y)
+                                   colors=colors, keyboard_y_for_onset=kb_y,
+                                   sample_step=kwargs.get('sample_step'))
 
     # Step 8: BPM
     print(f"\n--- Step 8: BPM detection ---")
