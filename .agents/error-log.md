@@ -157,3 +157,13 @@
 - The comparison must include: beat position, note name, and whether it matches GT, is missing, or is extra.
 - If this comparison is not in the message, the .mid path should not be in the message.
 - This is not optional regardless of how confident the note count comparison looks.
+
+## 2026-03-30 — Acted on ambiguous instruction without asking for clarification
+
+**What happened:** User said "put rating of 0.8 to song of test 9." Added a `rating` field to `tests/test9/expected.json` in the test suite. The user meant the song's note in `~/piano/songs/` (their personal teaching catalog), not the test config. Had to revert and redo.
+
+**Root cause:** Assumed intent instead of asking. "Rating" has no meaning in a test suite — should have recognized the ambiguity and asked where the rating should go.
+
+**Prevention:**
+- When an instruction doesn't make sense in the current context (e.g. "rating" in a test config), ASK where/how instead of guessing.
+- If unsure which file or system the user means, ask. A 5-second clarifying question saves minutes of wrong work and user frustration.

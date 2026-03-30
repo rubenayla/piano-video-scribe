@@ -81,6 +81,7 @@ def count_notes_in_range(notes, time_start, time_end, pitch_class=None):
 
 # ============================================================================
 # test2: Partial keyboard (26 white keys) — octave and edge detection
+# Ground truth verified by ear on 2026-03-30
 # ============================================================================
 
 class TestTest2Regression:
