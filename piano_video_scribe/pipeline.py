@@ -294,11 +294,19 @@ def main():
                     groups.append((onset, [idx]))
 
             # Quantize representative onsets.
+            # Shift onsets so the hand's first note starts at t=0 for the
+            # Viterbi (it always starts at grid 0). Then add back the offset
+            # so both hands stay on the same absolute timeline.
             rep_onsets = [g[0] for g in groups]
+            hand_t0 = rep_onsets[0]
+            rep_onsets_shifted = [t - hand_t0 for t in rep_onsets]
             if subdivisions == 4:
-                rep_grid = quantize_onsets_adaptive(rep_onsets, OUT_BPM)
+                rep_grid = quantize_onsets_adaptive(rep_onsets_shifted, OUT_BPM)
             else:
-                rep_grid = quantize_onsets_pll(rep_onsets, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+                rep_grid = quantize_onsets_pll(rep_onsets_shifted, OUT_BPM, alpha=0.1, subdivisions=subdivisions)
+            # Add back the offset: hand_t0 seconds = hand_t0/s grid units
+            hand_grid_offset = round(hand_t0 / s)
+            rep_grid = [p + hand_grid_offset for p in rep_grid]
 
             # Expand back: all members of a chord group share the same grid position
             on_g = [0] * len(onsets)
