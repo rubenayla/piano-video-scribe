@@ -262,6 +262,7 @@ class TestGroundTruthIntegrity:
     @pytest.mark.parametrize("test_name,expected_rh,expected_lh", [
         ("test2", 95, 122),
         ("test3", 335, 482),
+        ("test-falling-puppet", 96, 247),
     ])
     def test_gt_note_counts(self, test_name, expected_rh, expected_lh):
         gt_path = os.path.join(TESTS_DIR, test_name, "ground_truth.mid")
@@ -275,7 +276,7 @@ class TestGroundTruthIntegrity:
         assert len(lh) == expected_lh, \
             f"{test_name} LH: expected {expected_lh}, got {len(lh)}"
 
-    @pytest.mark.parametrize("test_name", ["test3", "test4"])
+    @pytest.mark.parametrize("test_name", ["test3", "test4", "test-falling-puppet"])
     def test_gt_no_overlapping_identical_notes(self, test_name):
         gt_path = os.path.join(TESTS_DIR, test_name, "ground_truth.mid")
         if not os.path.exists(gt_path):

@@ -1,0 +1,21 @@
+{
+  "description": "Ib - Mary's Theme (Puppet arrangement), Synthesia falling blocks, 6/8 time, E minor",
+  "source_url": "https://youtu.be/DNENsyfKKI8",
+  "bpm": 90,
+  "time_signature": [6, 8],
+  "keyboard": {
+    "frame": 210
+  },
+  "colors": {
+    "right_hand": "green",
+    "left_hand": "blue"
+  },
+  "ground_truth": "ground_truth.mid",
+  "ground_truth_stats": {
+    "right_hand_notes": 96,
+    "left_hand_notes": 247,
+    "right_hand_range": "B4-E6",
+    "left_hand_range": "A3-E5",
+    "note": "GT confirmed by user listening on 2026-03-31. Detector=falling-blocks, BPM=90 (with _refine_bpm_for_grid correction). All LH on 8th grid."
+  }
+}

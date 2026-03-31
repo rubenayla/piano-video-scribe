@@ -21,12 +21,16 @@ Known remaining issues (accepted):
 import os
 import subprocess
 import sys
+from collections import defaultdict
 
+import mido
 import pytest
 
-VIDEO = os.path.join(os.path.dirname(__file__), 'video.mp4')
-SETTINGS = os.path.join(os.path.dirname(__file__), 'settings.json')
-OUTPUT = os.path.join(os.path.dirname(__file__), 'output-video.mid')
+TEST_DIR = os.path.dirname(__file__)
+VIDEO = os.path.join(TEST_DIR, 'video.mp4')
+SETTINGS = os.path.join(TEST_DIR, 'settings.json')
+OUTPUT = os.path.join(TEST_DIR, 'output-video.mid')
+GROUND_TRUTH = os.path.join(TEST_DIR, 'ground_truth.mid')
 
 
 def _run_pipeline():
@@ -134,3 +138,79 @@ class TestFallingPuppet:
         first_tick = rh_notes[0][0]
         first_beat = first_tick / 960
         assert 5.5 <= first_beat <= 7.5, f'RH starts at beat {first_beat}'
+
+
+# ============================================================================
+# Ground truth note-by-note comparison
+# GT confirmed by user (listened to full piece) on 2026-03-31.
+# Every note must match exactly — pitch AND tick position.
+# ============================================================================
+
+def _extract_note_events(track):
+    """Extract (tick, midi_note) for all note-on events."""
+    abs_tick = 0
+    events = []
+    for msg in track:
+        abs_tick += msg.time
+        if msg.type == 'note_on' and msg.velocity > 0:
+            events.append((abs_tick, msg.note))
+    return events
+
+
+class TestPuppetGroundTruth:
+    """Note-by-note ground truth comparison.
+
+    The GT MIDI was confirmed correct by the user on 2026-03-31.
+    Any deviation means a regression — no tolerance, every note must match.
+    """
+
+    @pytest.fixture(autouse=True, scope='class')
+    def setup(self, request, midi):
+        if not os.path.exists(GROUND_TRUTH):
+            pytest.skip('ground_truth.mid not found')
+        gt = mido.MidiFile(GROUND_TRUTH)
+        # Find note tracks in GT
+        gt_note_tracks = [i for i, t in enumerate(gt.tracks)
+                          if any(m.type == 'note_on' and m.velocity > 0 for m in t)]
+        request.cls.gt_rh = _extract_note_events(gt.tracks[gt_note_tracks[0]])
+        request.cls.gt_lh = _extract_note_events(gt.tracks[gt_note_tracks[1]])
+        request.cls.out_rh = _extract_note_events(midi.tracks[0])
+        request.cls.out_lh = _extract_note_events(midi.tracks[1])
+
+    def test_rh_exact_note_count(self):
+        """RH note count must match GT exactly."""
+        assert len(self.out_rh) == len(self.gt_rh), \
+            f'RH: output has {len(self.out_rh)} notes, GT has {len(self.gt_rh)}'
+
+    def test_lh_exact_note_count(self):
+        """LH note count must match GT exactly."""
+        assert len(self.out_lh) == len(self.gt_lh), \
+            f'LH: output has {len(self.out_lh)} notes, GT has {len(self.gt_lh)}'
+
+    def test_rh_notes_match_gt(self):
+        """Every RH note must match GT in both pitch and tick position."""
+        mismatches = []
+        for i, (gt_ev, out_ev) in enumerate(zip(self.gt_rh, self.out_rh)):
+            gt_tick, gt_note = gt_ev
+            out_tick, out_note = out_ev
+            if gt_tick != out_tick or gt_note != out_note:
+                nn = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+                mismatches.append(
+                    f'  note {i}: GT=({gt_tick}, {nn[gt_note%12]}{gt_note//12-1}) '
+                    f'vs OUT=({out_tick}, {nn[out_note%12]}{out_note//12-1})')
+        assert not mismatches, \
+            f'RH has {len(mismatches)} mismatches:\n' + '\n'.join(mismatches[:20])
+
+    def test_lh_notes_match_gt(self):
+        """Every LH note must match GT in both pitch and tick position."""
+        mismatches = []
+        for i, (gt_ev, out_ev) in enumerate(zip(self.gt_lh, self.out_lh)):
+            gt_tick, gt_note = gt_ev
+            out_tick, out_note = out_ev
+            if gt_tick != out_tick or gt_note != out_note:
+                nn = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+                mismatches.append(
+                    f'  note {i}: GT=({gt_tick}, {nn[gt_note%12]}{gt_note//12-1}) '
+                    f'vs OUT=({out_tick}, {nn[out_note%12]}{out_note//12-1})')
+        assert not mismatches, \
+            f'LH has {len(mismatches)} mismatches:\n' + '\n'.join(mismatches[:20])
