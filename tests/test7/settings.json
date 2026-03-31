@@ -1,9 +1,44 @@
 {
   "bpm": 88,
-  "key": "Em",
-  "green_hand": "right",
   "frame": 400,
+  "green_hand": "right",
   "right_hand": "no-overlap",
   "left_hand": "no-overlap",
-  "config": "tests/test7/config.json"
+  "key": "Em",
+  "transpose": 0,
+  "detector": "keys",
+  "sampling": {
+    "y_offset_top": 90,
+    "y_offset_bot": 0,
+    "half_w": 10
+  },
+  "colors": {
+    "green": {
+      "h_min": 40,
+      "h_max": 65,
+      "s_min": 100,
+      "v_min": 80
+    },
+    "blue": {
+      "h_min": 100,
+      "h_max": 120,
+      "s_min": 80,
+      "v_min": 80
+    },
+    "right": {
+      "h_min": 74,
+      "h_max": 104,
+      "s_min": 80,
+      "v_min": 80
+    },
+    "left": {
+      "h_min": 137,
+      "h_max": 167,
+      "s_min": 80,
+      "v_min": 80
+    }
+  },
+  "keyboard": {
+    "frame": 5
+  }
 }

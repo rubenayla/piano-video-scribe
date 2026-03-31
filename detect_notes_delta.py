@@ -22,13 +22,7 @@ import numpy as np
 # Reuse keyboard detection and note mapping from the main module
 from pianovideoscribe import detect_keyboard, build_note_x_map
 
-# MIDI note number -> note name
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-
-def midi_to_name(midi_num):
-    octave = (midi_num // 12) - 1
-    name = NOTE_NAMES[midi_num % 12]
-    return f"{name}{octave}"
+from piano_video_scribe.constants import NOTE_NAMES, midi_to_name
 
 
 def build_detector_regions(note_x_map, white_keys, y_white):

@@ -5,5 +5,8 @@
   "right_hand": "no-overlap",
   "left_hand": "no-overlap",
   "start_time": 0.0,
-  "config": "tests/test11/config.json"
+  "colors": {
+    "right": { "h_min": 105, "h_max": 135, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 45, "h_max": 75, "s_min": 80, "v_min": 80 }
+  }
 }

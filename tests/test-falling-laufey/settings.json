@@ -1,0 +1,11 @@
+{
+  "bpm": 149.9,
+  "frame": 5,
+  "green_hand": "right",
+  "right_hand": "no-overlap",
+  "left_hand": "no-overlap",
+  "key": "Db",
+  "transpose": 0,
+  "detector": "falling-blocks",
+  "quantizer": "adaptive"
+}

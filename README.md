@@ -1,13 +1,6 @@
 # piano-video-scribe
 
-Convert a [Synthesia](https://synthesiagame.com) piano video into a clean, hand-separated MIDI and PDF sheet music.
-Works by reading the video's color coding (green/blue per hand) to split notes into right and left hand tracks, then quantizes the result to a musical grid. Includes a Claude Code slash command so an AI agent can run the full pipeline — YouTube URL to sheet music PDF — autonomously.
-
-## What is this
-
-[Synthesia](https://synthesiagame.com) is a piano learning app that displays falling colored notes — one color per hand. It displays each hand in a different color (green = right, blue = left by default).
-This tool reads those colors frame-by-frame and uses them to split a MIDI file — transcribed
-from the same video's audio — into two tracks that MuseScore can render as standard sheet music.
+Convert [Synthesia](https://synthesiagame.com) piano videos into hand-separated MIDI and PDF sheet music. Pure computer vision — no ML, no audio transcription.
 
 ## Quick start
 
@@ -15,148 +8,115 @@ from the same video's audio — into two tracks that MuseScore can render as sta
 git clone https://github.com/rubenayla/piano-video-scribe
 cd piano-video-scribe
 pip install -r requirements.txt
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
-```
 
----
+# Download video
+yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]" "https://youtu.be/VIDEO_ID" -o video.mp4
 
-## Step 0: Get the Synthesia video
+# Run pipeline (BPM auto-detected if omitted)
+python pianovideoscribe.py video.mp4 output.mid
 
-**Option A — YouTube:**
-```bash
-pip install yt-dlp
-yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]" \
-  "https://youtu.be/VIDEO_ID" -o video.mp4
-```
-
-**Option B — manual:** Right-click the video in your browser → Save video as.
-
----
-
-## Step 1: Get the MIDI
-
-You need a MIDI file that represents the notes in the video.
-The video and the MIDI must be for the same recording.
-
-### Option A (best): transcribe the audio with `piano_transcription_inference`
-
-```bash
-# Install (requires Python ≥ 3.8, downloads a ~165 MB model on first run)
-pip install piano_transcription_inference librosa
-
-# Extract audio from the video
-ffmpeg -i video.mp4 -vn -acodec pcm_s16le -ar 44100 audio.wav
-
-# Transcribe
-python - <<'EOF'
-from piano_transcription_inference import PianoTranscription, sample_rate
-import librosa
-audio, _ = librosa.load('audio.wav', sr=sample_rate, mono=True)
-transcriptor = PianoTranscription(device='cpu')
-transcriptor.transcribe(audio, 'transcription.mid')
-EOF
-```
-
-This produces a MIDI at 120 BPM / 384 TPB with raw audio timestamps (not quantized) —
-`pianovideoscribe.py` handles the quantization.
-
-### Option B: use any existing MIDI
-
-If you already have a MIDI that matches the video, use it directly.
-
----
-
-## Step 2: Run pianovideoscribe.py
-
-```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120
-```
-
-**All arguments:**
-
-| Argument | Description |
-|---|---|
-| `video` | Path to the Synthesia MP4 |
-| `midi` | Path to the input MIDI |
-| `output` | Path for the output MIDI |
-| `--bpm` | **Required.** Real BPM of the song (e.g. `--bpm 81`) |
-| `--frame` | Frame used for keyboard detection (default: 5) |
-| `--green-hand` | Which hand is green: `right` (default) or `left` |
-| `--monophonic-left` | **Recommended for most songs.** Force left hand to one note at a time. |
-| `--dry-run` | Detect keyboard only, print stats, exit (use for calibration) |
-
-### About `--monophonic-left`
-
-When playing piano, it's natural to keep a bass note slightly pressed while the next note begins — it sounds better, especially with the sustain pedal. But technically that creates two simultaneous notes, which notation software counts as two separate voices. The result is a cluttered staff with rests and stems going in both directions that is hard to read.
-
-If the left hand part is melodically a single voice (one note at a time), `--monophonic-left` cuts each note exactly when the next one starts, producing a clean single-voice staff. The music sounds identical (the overlap was inaudible in the sheet anyway).
-
----
-
-## Step 3: Open in MuseScore
-
-On macOS with MuseScore 4 installed, you can open the output directly from the terminal:
-
-```bash
+# Open in MuseScore (Preferences > Import > MIDI > Shortest note: 16th)
 open -a "MuseScore 4" output.mid
 ```
 
-Otherwise:
-1. Download [MuseScore 3](https://musescore.org/en/download) (free)
-2. Open the output MIDI: **File → Open**
-3. Before or after opening, set: **Edit → Preferences → Import → MIDI → Shortest note: 16th**
-4. You should see two staves: treble (right hand) + bass (left hand)
-
----
-
-## Calibration
-
-If the hands look swapped:
-```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --green-hand left
-```
-
-If detection is low (< 70%), try a different frame for keyboard detection:
-```bash
-python pianovideoscribe.py video.mp4 transcription.mid output.mid --bpm 120 --frame 10 --dry-run
-```
-Look for a frame index where the keyboard is fully visible with no colored note bars on top of it.
-
----
-
-## Limitations
-
-- Requires Synthesia's **default color scheme** (green/blue). Custom colors need hardcoded HSV
-  threshold adjustments in the script.
-- **BPM must be known.** Wrong BPM = notes merged into chords in the sheet music.
-- **Partial keyboard is fine** — the script auto-detects the visible key range.
-- Very high or very low notes outside the visible keyboard region fall back to pitch-proximity
-  assignment and are usually still correct.
-
----
-
-## Using with an AI agent
-
-If you're using a Claude Code agent (or similar), you can delegate the full pipeline with a single prompt. Clone this repo first, then say:
-
-> Use the piano-video-scribe repo (`~/repos/piano-video-scribe`) to transcribe this Synthesia video: `https://youtu.be/VIDEO_ID`. The BPM is 120. Give me the final MIDI and MuseScore instructions.
-
-The agent will read `AGENT.md` for the full pipeline and handle everything — downloading, transcription, hand separation, and output.
-
-If you don't know the BPM, say so and the agent will figure it out.
-
-This repo includes a `.claude/commands/PianoVideoScribe.md` file, so the `/PianoVideoScribe` slash command is available automatically in any Claude Code session opened inside the repo directory. (The command file keeps its original name for compatibility.)
-
----
-
 ## How it works
 
-1. Reads an early video frame to detect white and black key positions via HSV thresholding.
-2. Builds a MIDI note → x-pixel map using black key grouping to find octave alignment.
-3. For each `note_on` event in the input MIDI, seeks to the corresponding video frame and
-   samples the HSV color at the note's x position (y ≈ 480–600, covering both the falling
-   bar and the lit key).
-4. Classifies green → right hand, blue → left hand. Undetected notes fall back to
-   pitch-proximity assignment.
-5. Re-quantizes all note timestamps to a 16th-note grid at the given BPM and writes a
-   2-track Type-1 MIDI (channel 0 only, to avoid MuseScore creating 4 staves).
+The pipeline reads falling colored blocks from the video to extract notes, then quantizes them to a musical grid.
+
+### 1. Keyboard detection — [`piano_video_scribe/keyboard.py`](piano_video_scribe/keyboard.py)
+
+Find the keyboard in a reference frame to build a pitch map (x-pixel → MIDI note).
+
+- `detect_keyboard()` — Scan for regularly-spaced white keys and black keys using HSV thresholding.
+- `find_first_c()` — Identify which white key is C by matching the black key grouping pattern (2-3-2-3...).
+- `build_note_x_map()` — Assign MIDI note numbers to x-positions based on keyboard size and octave heuristics.
+
+### 2. Note detection (falling blocks) — [`piano_video_scribe/detectors/falling_blocks.py`](piano_video_scribe/detectors/falling_blocks.py)
+
+Track colored blocks as they fall through the waterfall area, collecting onset predictions from every frame.
+
+**Block detection** (per frame):
+1. `auto_detect_colors()` — Sample frames to find the two hand colors via hue histogram clustering.
+2. `make_color_mask()` — HSV threshold: pixels matching hue range + saturation minimum → binary mask. Saturation threshold is configurable per color via `s_min_per_color` in settings.json (needed to separate rapid repeated notes whose gaps have lower saturation).
+3. Morphological erosion (horizontal 1×5 kernel) breaks bridges between adjacent keys.
+4. `cv2.findContours()` traces connected white regions → bounding rectangles.
+5. Size/shape filters reject UI elements, progress bars, and noise.
+
+**Block tracking** across frames:
+- Each block is tracked by matching (pitch, color, expected y-position) across consecutive frames.
+- Every observation produces an independent onset prediction: `onset = t + (keyboard_y - y_bot) / fall_speed`.
+- The **median** of all predictions for a track gives the final onset — naturally rejecting outliers from clipped or glow-corrupted frames.
+- `measure_fall_speed()` — Measure fall rate (pixels/frame) from block displacement across frame pairs.
+
+**Configurable parameters** (via `settings.json`):
+- `glow_margin` — Pixels above keyboard to exclude from scan (avoids key-press glow artifacts, default 50).
+- `s_min_per_color` — Per-color saturation threshold, e.g. `{"h46": 145, "h108": 80}` for different block shades.
+
+### 3. Hand separation — [`piano_video_scribe/color.py`](piano_video_scribe/color.py)
+
+- Colors are auto-assigned: the color with higher average pitch = right hand, lower = left hand.
+- Synthesia videos use two shades per hand (e.g. bright green + light green). Both share the same hue, differing only in saturation/brightness.
+
+### 4. Quantization — [`piano_video_scribe/quantization.py`](piano_video_scribe/quantization.py)
+
+Snap raw onset times to a musical grid (16th-note resolution).
+
+- `quantize_onsets_viterbi()` — Viterbi DP finds the globally optimal grid assignment minimizing interval + absolute-position error.
+- `quantize_onsets_adaptive()` — Two-pass adaptive tempo tracking: first Viterbi pass estimates a smooth local BPM curve via `estimate_local_bpm()`, then `warp_onsets()` compensates for drift before a second Viterbi pass. Handles tempo changes mid-piece (e.g. ritardando, fermata).
+- Chord notes within 50ms are grouped so the quantizer places them simultaneously.
+
+### 5. Post-processing — [`piano_video_scribe/midi_output.py`](piano_video_scribe/midi_output.py)
+
+- `make_monophonic()` — Keep only the highest (RH) or lowest (LH) note at each time.
+- `remove_overlaps()` — Cut held notes at the next onset while preserving chords.
+- Transpose, key signature metadata (auto-detected via music21).
+
+### 6. Output
+
+Two-track Type-1 MIDI (right hand + left hand) via `build_track()`.
+
+## CLI arguments
+
+| Argument | Description |
+|---|---|
+| `video` | Path to Synthesia MP4 |
+| `midi` | *(optional)* Input MIDI — if provided, uses video only for hand separation |
+| `output` | Path for output MIDI |
+| `--bpm N` | BPM (auto-detected from audio if omitted) |
+| `--detector` | `falling-blocks` (default) or `keys` (key-lighting fallback) |
+| `--right-hand` | `no-overlap` (default), `monophonic`, or `normal` |
+| `--left-hand` | `no-overlap` (default), `monophonic`, or `normal` |
+| `--green-hand` | Which hand is green: `right` (default) or `left` |
+| `--start-beat N` | Beat position of first note (auto-detected if omitted) |
+| `--time-sig` | Time signature, e.g. `6/8`, `3/4` (default: 4/4) |
+| `--key` | Key signature for MIDI metadata, e.g. `G`, `Em` (auto-detected if omitted) |
+| `--transpose N` | Transpose by N semitones |
+| `--settings` | Path to settings.json (CLI flags override) |
+| `--frame N` | Frame index for keyboard detection (default: 5) |
+| `--config` | Path to color config JSON |
+| `--triplet` | Use combined grid (16ths + triplets) |
+| `--dry-run` | Detect keyboard only, print stats, exit |
+
+Settings are auto-saved as `settings.json` next to the output MIDI for reproducibility.
+
+## Detectors
+
+**Falling blocks** (default): Reads colored block contours above the keyboard. Handles repeated notes, 16th-note runs, and re-attacks that the key-press detector misses (keys stay lit between re-attacks, but blocks are visually distinct).
+
+**Key-press**: Scans key saturation frame-by-frame. Fallback for videos without falling blocks (if any exist). Use `--detector keys`.
+
+## Using with Claude Code
+
+The repo includes a `/PianoVideoScribe` slash command. In any Claude Code session inside this repo:
+
+> /PianoVideoScribe https://youtu.be/VIDEO_ID
+
+The agent reads `.agents/pipeline.md` and handles everything: download, detection, quantization, and output.
+
+## Tests
+
+```bash
+python -m pytest tests/ --ignore=tests/test1 -v
+```
+
+Tests run the full pipeline on test videos and check output MIDI properties (note counts, grid alignment, pitch correctness). ~45 seconds.

@@ -5,5 +5,8 @@
   "frame": 5,
   "right_hand": "no-overlap",
   "left_hand": "no-overlap",
-  "config": "configs/teal_salmon.json"
+  "colors": {
+    "right": { "h_min": 65, "h_max": 95, "s_min": 80, "v_min": 80 },
+    "left":  { "h_min": 0, "h_max": 24, "s_min": 80, "v_min": 80 }
+  }
 }
