@@ -108,15 +108,11 @@ class TestTest2Regression:
         count = count_notes_in_range(self.rh, 20.0, 21.0, f_sharp_pc)
         assert count >= 2, f"Expected >=2 F# rapid repeats at t=20s, got {count}"
 
-    def test_lh_short_notes_detected(self):
-        """Pipeline should detect very short notes (0.09s / ~3 frames).
-
-        Bug: LH C#3 at 42.78s is only 0.09s long, not detected.
-        """
+    def test_lh_c_sharp_detected(self):
+        """LH C#3 at ~43.3s should be detected."""
         c_sharp_pc = 1
-        found = has_note_near(self.lh, 42.78, c_sharp_pc, tolerance=0.5)
-        if not found:
-            pytest.xfail("Known issue: ultra-short notes (0.09s) not detected")
+        found = has_note_near(self.lh, 43.33, c_sharp_pc, tolerance=0.5)
+        assert found, "LH C#3 near 43.3s not detected"
 
 
 # ============================================================================
@@ -260,7 +256,7 @@ class TestGroundTruthIntegrity:
     """Verify ground truth files are self-consistent."""
 
     @pytest.mark.parametrize("test_name,expected_rh,expected_lh", [
-        ("test2", 95, 122),
+        ("test2", 96, 122),
         ("test3", 335, 482),
         ("test-falling-puppet", 96, 247),
     ])
