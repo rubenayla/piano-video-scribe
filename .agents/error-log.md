@@ -267,3 +267,25 @@ Stage 3 (`HARDCODED_DEFAULTS`) already had `'detector': 'falling-blocks'` as a f
 - Function names should match their behavior. If a setting says "viterbi," the code should call the Viterbi quantizer, not a wrapper with different behavior.
 - The adaptive quantizer's drift threshold (0.3 BPM) is too sensitive — normal measurement noise in onset times can produce apparent BPM variations of 1-2 BPM without any real tempo change.
 - When investigating quantization bugs, compare all three: naive rounding, Viterbi, and adaptive output against the raw onsets to isolate which step introduces the error.
+
+## 2026-03-31 — Proposed alternative instead of executing clear user instruction
+
+**What happened:** User said to remove a duplicate folder, keeping only interesting info from its .md. Instead of doing it, agent proposed a different plan (moving files the user explicitly called "obsolete") and asked for confirmation. The user had to re-read their own instruction back to the agent.
+
+**Root cause:** Over-helpfulness / second-guessing clear instructions. The user said "removing those files, obsolete, except info from .md" — that's an unambiguous instruction, not a request for suggestions.
+
+**Prevention:**
+- When the user gives a clear instruction, execute it. Don't propose alternatives unless there's a genuine risk (data loss of something the user doesn't realize, etc.).
+- "Obsolete" means obsolete. Don't try to save files the user explicitly marked for deletion.
+- Re-read the user's message before acting. If the instruction is clear, just do it.
+
+## 2026-03-31 — Failed to ask for clarification when context was ambiguous
+
+**What happened:** User asked to log an error in `.agents/error-log.md`. The current working directory (~/) has no repo, but the user was working on a piano-video-scribe task. Instead of asking which error log, agent silently read `~/.agents/error_log.md` (a completely unrelated bot infrastructure error log) and started composing an entry for it.
+
+**Root cause:** Defaulting to action instead of asking when the correct target was ambiguous. The agent knew the home directory wasn't a repo and the found error log was for bot infrastructure — yet proceeded anyway instead of asking a simple clarifying question.
+
+**Prevention:**
+- When the target file/location is ambiguous, ASK. A 5-second question saves minutes of wrong work.
+- Don't silently pick the first match when multiple candidates exist or when the match clearly doesn't fit the context.
+- This is the same class of error as the 2026-03-30 "acted on ambiguous instruction" entry — when unsure, ask.
