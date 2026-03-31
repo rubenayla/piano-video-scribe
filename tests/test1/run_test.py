@@ -27,17 +27,16 @@ def load_expected():
 def run_pipeline(video_path, output_path, bpm, frame):
     """Run pianovideoscribe in video-only mode."""
     import cv2
-    from pianovideoscribe import (
-        detect_keyboard, build_note_x_map, extract_notes_from_video,
-        classify_hand, load_config,
-    )
+    from piano_video_scribe.keyboard import detect_keyboard, build_note_x_map
+    from piano_video_scribe.detectors.keys import extract_notes_from_video
+    from piano_video_scribe.config import load_config
 
     cfg = load_config(None)
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    white_keys, black_keys, y_white, y_black = detect_keyboard(cap, frame_idx=frame)
+    white_keys, black_keys, y_white, y_black, y_kb_top, y_bk_bottom = detect_keyboard(cap, frame_idx=frame)
     note_x_map = build_note_x_map(white_keys, black_keys, 21)
 
     y_top = y_white - cfg['sampling']['y_offset_top']
