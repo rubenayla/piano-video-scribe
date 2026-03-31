@@ -3,7 +3,7 @@
 
 ## TODO
 
-## In Progress
+## TODO
 
 - **Improve `estimate_local_bpm` convergence**
   - Currently uses median filter (window=7) + rate limiter to reject garbage BPM estimates from mis-rounded grid positions
@@ -13,7 +13,8 @@
 
 ## Done (2026-03-31)
 
-- [2026-03-31] **Fix Laufey m105+ wrong rhythm**: Root cause was `quantizer=viterbi` in pipeline called `quantize_onsets_adaptive` (2-pass with BPM warping) instead of plain `quantize_onsets_viterbi`. The adaptive warping accumulated +70ms by m49 and +170ms by m107, shifting notes +1 to +2 sixteenths. Fix: `viterbi` setting now calls plain Viterbi; added separate `adaptive` option. Regenerated output MIDI and PDF. m1-m48 unchanged; m49+ now correct.
+- [2026-03-31] **Laufey GT committed as regression test**: `ground_truth.mid` + 4 exact-match tests (m1–104 only, 517 RH + 564 LH notes). m105–108 excluded: ritardando not encoded as tempo changes, arpeggios approximate. User hand-corrected in MuseScore.
+- [2026-03-31] **Separate viterbi/adaptive quantizer options**: `viterbi` now calls plain Viterbi DP; `adaptive` calls 2-pass with BPM warping. Laufey uses `adaptive` in settings.
 - [2026-03-31] **Make settings.json read-only**: Removed auto-save block from pipeline.py. Settings are now read-only input; CLI flags override in memory only. Reverted corrupted test settings files.
 - [2026-03-31] **Puppet GT committed as regression test**: `ground_truth.mid` + 4 exact-match tests (pitch AND tick, zero tolerance). 96 RH, 247 LH notes. User confirmed by ear.
 - [2026-03-31] **Regenerate Puppet PDF for Maite**: Re-ran pipeline with current code. Output verified correct. Files at `~/piano/songs/ib-marys-theme-puppet/`.
