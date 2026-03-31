@@ -17,7 +17,8 @@ from piano_video_scribe.color import (
 )
 from piano_video_scribe.quantization import (
     make_tick_converters, quantize_tick, quantize_tick_smart,
-    quantize_onsets_pll, quantize_onsets_adaptive, quantize_onsets_simple,
+    quantize_onsets_pll, quantize_onsets_viterbi, quantize_onsets_adaptive,
+    quantize_onsets_simple,
 )
 from piano_video_scribe.midi_output import remove_overlaps, make_monophonic, build_track
 from piano_video_scribe.visualization import generate_summary_image
@@ -308,6 +309,12 @@ def main():
             if quantizer == 'simple':
                 on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
             elif quantizer == 'viterbi':
+                hand_t0 = onsets[0]
+                onsets_shifted = [t - hand_t0 for t in onsets]
+                on_g = list(quantize_onsets_viterbi(onsets_shifted, OUT_BPM))
+                hand_grid_offset = round(hand_t0 / s)
+                on_g = [p + hand_grid_offset for p in on_g]
+            elif quantizer == 'adaptive':
                 hand_t0 = onsets[0]
                 onsets_shifted = [t - hand_t0 for t in onsets]
                 on_g = list(quantize_onsets_adaptive(onsets_shifted, OUT_BPM))

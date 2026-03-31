@@ -242,3 +242,28 @@ Stage 3 (`HARDCODED_DEFAULTS`) already had `'detector': 'falling-blocks'` as a f
 - All argparse arguments that can be overridden by settings.json MUST use `default=None`. The actual default goes in `HARDCODED_DEFAULTS` only.
 - When adding new CLI arguments, check the merge order: `None` argparse default → settings.json fills it → `HARDCODED_DEFAULTS` fills anything still `None`.
 - If a test starts failing with "wrong detector" or "wrong parameter", check whether the settings file value is actually being applied — don't assume the merge works.
+
+## 2026-03-31 — Wasted 10+ minutes on broken debug scripts instead of fixing the actual problem
+
+**What happened:** User asked to check why Laufey m105 has wrong rhythm (suspected ritardando). Instead of analyzing the MIDI data already available and implementing a fix, spent 10+ minutes writing Python scripts that repeatedly crashed on `build_note_x_map` argument mismatches. Kept trying variations of the same broken approach. Called Python function calls "API calls" which confused the user further. By the time the problem was clearly diagnosed (ritardando causes +1 sixteenth drift at m105+), context was heavily used (~500k+ tokens) and quality degraded — circular reasoning, sloppy language, inability to just implement the fix.
+
+**Root cause:** (1) Tried to extract raw onset data by calling internal pipeline functions directly instead of using simpler approaches (the MIDI output already showed the problem clearly). (2) After each crash, retried a slight variation instead of changing strategy. (3) Deep context degradation — this was late in a long conversation with many subagent results eating context.
+
+**Prevention:**
+- When debugging quantization issues, analyze the MIDI output first — it already contains the quantized positions. Don't try to re-run the detector standalone.
+- If a Python script crashes on argument mismatches, don't retry with variations. Read the function signature once, or use the pipeline entry point (`pianovideoscribe.py`) which handles all the wiring.
+- In long conversations with many subagent results, start a fresh conversation for complex new tasks rather than degrading quality in an overloaded context.
+- Don't call Python function invocations "API calls" — it's confusing and incorrect.
+
+## 2026-03-31 — `quantizer=viterbi` secretly called adaptive quantizer, causing cumulative drift
+
+**What happened:** Laufey "From The Start" had all LH notes shifted +1 sixteenth from m49 onwards, growing to +2 sixteenths by m107. The task description blamed "ritardando" but the raw onset data showed no ritardando — the video blocks fell at constant speed. The bug was in `pipeline.py`'s `quantize_hand()`: when `quantizer == 'viterbi'`, it called `quantize_onsets_adaptive()` (2-pass: Viterbi + BPM estimation + warp + re-Viterbi) instead of plain `quantize_onsets_viterbi()`. The adaptive warping accumulated a progressive positive time shift (+70ms by m49, +170ms by m107) that pushed notes past grid boundaries.
+
+**Root cause:** The adaptive quantizer's `estimate_local_bpm` detected tiny tempo variations (149.9-151.5 BPM range, just noise) that exceeded the drift threshold (0.3 BPM). The warping then accumulated these small corrections into a systematic forward shift. The plain Viterbi quantizer produced perfect results since the raw onsets were already well-aligned to the grid.
+
+**Fix:** Made `quantizer=viterbi` call `quantize_onsets_viterbi` (plain). Added `quantizer=adaptive` as a separate choice for cases that genuinely need tempo-drift warping.
+
+**Prevention:**
+- Function names should match their behavior. If a setting says "viterbi," the code should call the Viterbi quantizer, not a wrapper with different behavior.
+- The adaptive quantizer's drift threshold (0.3 BPM) is too sensitive — normal measurement noise in onset times can produce apparent BPM variations of 1-2 BPM without any real tempo change.
+- When investigating quantization bugs, compare all three: naive rounding, Viterbi, and adaptive output against the raw onsets to isolate which step introduces the error.

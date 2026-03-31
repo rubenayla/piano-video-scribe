@@ -3,7 +3,7 @@
 
 ## TODO
 
-
+## In Progress
 
 - **Improve `estimate_local_bpm` convergence**
   - Currently uses median filter (window=7) + rate limiter to reject garbage BPM estimates from mis-rounded grid positions
@@ -11,16 +11,13 @@
   - The real fix: don't depend on initial grid positions for BPM estimation (chicken-and-egg problem)
   - Possible approach: use Viterbi grid positions (more robust), or estimate BPM from intervals without grid_step
 
-- **Regenerate Laufey and Puppet PDFs for student Maite**
-  - Laufey: BPM auto-detection now finds 149.9 automatically. Key=Db. Regenerate and verify m1-m32.
-  - Puppet: `~/piano/songs/ib-marys-theme-puppet/`
-  - Pipeline saves settings on each run — be careful not to overwrite test settings files
+## Done (2026-03-31)
 
-- **Simplify config merge: settings.json first, CLI flags overwrite, never write back**
-  - Load settings.json as the baseline config for the run
-  - CLI flags overwrite settings in memory (only the ones the user actually passed)
-  - Never write back to settings.json — the file is read-only input
-  - This also fixes the auto-save bug (pipeline currently overwrites settings.json on every run, corrupting test fixtures)
+- [2026-03-31] **Fix Laufey m105+ wrong rhythm**: Root cause was `quantizer=viterbi` in pipeline called `quantize_onsets_adaptive` (2-pass with BPM warping) instead of plain `quantize_onsets_viterbi`. The adaptive warping accumulated +70ms by m49 and +170ms by m107, shifting notes +1 to +2 sixteenths. Fix: `viterbi` setting now calls plain Viterbi; added separate `adaptive` option. Regenerated output MIDI and PDF. m1-m48 unchanged; m49+ now correct.
+- [2026-03-31] **Make settings.json read-only**: Removed auto-save block from pipeline.py. Settings are now read-only input; CLI flags override in memory only. Reverted corrupted test settings files.
+- [2026-03-31] **Puppet GT committed as regression test**: `ground_truth.mid` + 4 exact-match tests (pitch AND tick, zero tolerance). 96 RH, 247 LH notes. User confirmed by ear.
+- [2026-03-31] **Regenerate Puppet PDF for Maite**: Re-ran pipeline with current code. Output verified correct. Files at `~/piano/songs/ib-marys-theme-puppet/`.
+- [2026-03-31] **Regenerate Laufey PDF for Maite (partial)**: m1-m104 perfect. m105+ has wrong rhythm — see TODO. Files at `~/piano/songs/from-the-start-laufey/`.
 
 ## Done (2026-03-30)
 
