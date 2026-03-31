@@ -1,6 +1,5 @@
 """Main pipeline orchestration — ties all modules together."""
 
-import json
 import os
 import sys
 from collections import deque
@@ -9,7 +8,7 @@ import cv2
 import numpy as np
 from mido import MidiFile, MidiTrack, Message, MetaMessage
 
-from piano_video_scribe.config import parse_args, detect_bpm_from_video, load_config, CONFIG_SECTIONS
+from piano_video_scribe.config import parse_args, detect_bpm_from_video, load_config
 from piano_video_scribe.keyboard import (
     detect_keyboard, build_note_x_map, build_detector_regions,
 )
@@ -229,27 +228,42 @@ def main():
 
     # --- Shared quantization for all video-based detectors ---
     if args.midi is None:
-        # Refine BPM using detected note onsets: test candidates near the
-        # initial estimate and pick the one with least quantization error.
+        # When BPM was auto-detected (not user-specified), refine it using
+        # the detected note onsets for better precision.
         if not args._had_explicit_bpm:
-            onsets = sorted(set(n[2] for n in video_notes))
-            if len(onsets) >= 10:
-                intervals = [onsets[i+1] - onsets[i] for i in range(len(onsets)-1)
-                              if 0.05 < onsets[i+1] - onsets[i] < 2.0]
-                if intervals:
-                    # Test BPM candidates: original ± 15%, in steps of 1
-                    best_bpm, best_err = OUT_BPM, float('inf')
-                    for candidate in range(max(40, OUT_BPM - 15), min(220, OUT_BPM + 16)):
-                        s16 = 60.0 / candidate / 4
-                        # Quantization error: how well do intervals snap to 16th-note multiples?
-                        err = sum(abs(iv / s16 - round(iv / s16)) for iv in intervals[:50])
-                        if err < best_err:
-                            best_err = err
-                            best_bpm = candidate
-                    if best_bpm != OUT_BPM:
-                        print(f"  BPM refined: {OUT_BPM} → {best_bpm} "
-                              f"(onset-based, {len(intervals)} intervals)")
-                        OUT_BPM = best_bpm
+            # For falling-blocks, use note-based BPM as starting point
+            # (more reliable than audio-based for Synthesia videos).
+            if args.detector == 'falling-blocks' and len(video_notes) >= 10:
+                from piano_video_scribe.detectors.falling_blocks import detect_bpm as _fb_detect_bpm
+                fb_bpm = _fb_detect_bpm(video_notes)
+                if 40 <= fb_bpm <= 220:
+                    print(f"  Note-based BPM: {fb_bpm:.1f} (replaces audio estimate {OUT_BPM})")
+                    OUT_BPM = fb_bpm
+            # Refine BPM: search ±15 in 0.1 steps, pick the value where
+            # the most notes land on 8th-note grid positions (even grid16).
+            all_onsets = sorted(on for _, _, on, _ in video_notes)
+            first = all_onsets[0]
+            rel_onsets = [on - first for on in all_onsets]
+            if len(rel_onsets) >= 10:
+                best_bpm, best_on_grid = OUT_BPM, 0
+                low = max(40.0, OUT_BPM - 15)
+                high = min(220.0, OUT_BPM + 15)
+                candidate = low
+                while candidate <= high:
+                    s16 = 60.0 / candidate / 4
+                    on_grid = sum(1 for t in rel_onsets if round(t / s16) % 2 == 0)
+                    if on_grid > best_on_grid:
+                        best_on_grid = on_grid
+                        best_bpm = candidate
+                    candidate += 0.1
+                best_bpm = round(best_bpm, 1)
+                if best_bpm != OUT_BPM:
+                    print(f"  BPM refined: {OUT_BPM} → {best_bpm} "
+                          f"({best_on_grid}/{len(rel_onsets)} notes on 8th grid)")
+                    OUT_BPM = best_bpm
+
+        # Recompute derived values after any BPM changes
+        OUT_US_PER_BEAT = int(60_000_000 / OUT_BPM)
 
         # Convert to quantized events using phase-locked loop quantizer.
         # PLL self-corrects for BPM drift and per-note jitter (97% accuracy).
@@ -474,6 +488,10 @@ def main():
         if score is not None:
             detected = score.analyze('key')
             tonic = detected.tonic.name.replace('-', 'b')
+            # Prefer simpler enharmonic spelling (Db over C#, Ab over G#)
+            enharmonic_map = {'C#': 'Db', 'G#': 'Ab', 'D#': 'Eb', 'A#': 'Bb',
+                              'E#': 'F', 'B#': 'C', 'Fb': 'E', 'Cb': 'B'}
+            tonic = enharmonic_map.get(tonic, tonic)
             if detected.mode == 'minor':
                 key_sig = tonic + 'm'
             else:
@@ -502,26 +520,3 @@ def main():
     print(f"\nDone! Open {args.output} in MuseScore.")
     print("Tip: Preferences → Import → MIDI → Shortest note: 16th")
 
-    # --- Auto-save settings.json next to the output MIDI ---
-    settings_to_save = {}
-    # Save all non-None optional args (skip positionals and runtime-only flags)
-    skip_save = {'settings', 'dry_run', 'triplet', 'video', 'midi', 'output'}
-    for action in vars(args):
-        if action.startswith('_') or action in skip_save:
-            continue
-        val = getattr(args, action)
-        if val is not None:
-            settings_to_save[action] = val
-    # Embed resolved config sections inline (replaces separate config file pointer)
-    inline = getattr(args, '_inline_config', {})
-    if inline or args.config:
-        for section in CONFIG_SECTIONS:
-            if section in cfg:
-                settings_to_save[section] = cfg[section]
-        # Config file no longer needed when sections are inline
-        settings_to_save.pop('config', None)
-    settings_path = os.path.join(os.path.dirname(os.path.abspath(args.output)), 'settings.json')
-    with open(settings_path, 'w') as f:
-        json.dump(settings_to_save, f, indent=2)
-        f.write('\n')
-    print(f"Settings saved: {settings_path}")
