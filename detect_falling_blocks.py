@@ -15,8 +15,6 @@ from piano_video_scribe.detectors.falling_blocks import (
     build_pitch_map,
     find_keyboard_y,
     measure_fall_speed,
-    extract_notes_scanband,
-    extract_notes_contour,
     detect_bpm,
 )
 

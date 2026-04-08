@@ -562,340 +562,6 @@ def _build_x_to_pitch(note_map):
     return x_to_pitch
 
 
-def extract_notes_scanband(cap, note_map, keyboard_y, fall_speed,
-                           merge_tolerance=0.15, min_duration=0.08):
-    """Extract notes using a tall scan band just above the keyboard.
-
-    Uses a band from (keyboard_y - band_height) to (keyboard_y - 2).
-    Blocks are tracked as they pass through this band.
-    Onset time = first appearance + offset to reach keyboard.
-    Offset time = last appearance + offset for top of block to reach keyboard.
-
-    This gives accurate timing and reliable detection since blocks spend
-    many frames passing through the tall band.
-    """
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Band: 50px tall, just above the keyboard dark line
-    band_top = keyboard_y - 52
-    band_bot = keyboard_y - 2
-    band_h = band_bot - band_top
-
-    # Time for a block to fall from band_top to keyboard
-    frames_band_to_kb = (keyboard_y - band_top) / fall_speed
-    time_offset = frames_band_to_kb / fps
-
-    # Time for a block to traverse the full band
-    frames_across_band = band_h / fall_speed
-
-    print(f"  Scan band: y={band_top}..{band_bot} ({band_h}px), "
-          f"onset offset: {time_offset:.2f}s")
-
-    x_to_pitch = _build_x_to_pitch(note_map)
-    hand_map = {'blue': 0, 'red': 1}
-
-    # Track active notes: (pitch, color) -> {'first_frame', 'last_frame'}
-    active = {}
-    raw_notes = []
-
-    for fi in range(0, total):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        band = hsv[band_top:band_bot, :, :]
-
-        # Find colored runs for each color
-        current = set()
-        for color_name, mask_fn in [('blue', blue_mask), ('red', red_mask)]:
-            mask = mask_fn(band)
-            col_any = np.any(mask, axis=0)
-
-            in_run = False
-            sx = 0
-            w = col_any.shape[0]
-            min_run_width = 12  # filter stray pixels
-            x_margin = 30  # ignore edges of frame
-            for x in range(w):
-                if col_any[x] and not in_run:
-                    in_run = True
-                    sx = x
-                elif not col_any[x] and in_run:
-                    bw = x - sx
-                    cx = (sx + x) / 2.0
-                    if bw >= min_run_width and x_margin < cx < w - x_margin:
-                        pitch = x_to_pitch(cx)
-                        if pitch is not None:
-                            current.add((pitch, color_name))
-                    in_run = False
-            if in_run and w - sx >= min_run_width:
-                cx = (sx + w) / 2.0
-                if x_margin < cx < w - x_margin:
-                    pitch = x_to_pitch(cx)
-                    if pitch is not None:
-                        current.add((pitch, color_name))
-
-        # New onsets
-        for key in current:
-            if key not in active:
-                active[key] = {'first_frame': fi, 'last_frame': fi}
-            else:
-                active[key]['last_frame'] = fi
-
-        # Check for ended notes: not seen for > gap_frames
-        gap_frames = 3  # allow small gaps (video compression artifacts)
-        ended = []
-        for key, info in active.items():
-            if key not in current and fi - info['last_frame'] > gap_frames:
-                pitch, color = key
-                hand = hand_map.get(color)
-                # Onset: when bottom of block reaches keyboard
-                # = first_frame / fps + time_offset
-                onset = info['first_frame'] / fps + time_offset
-                # Offset: when top of block passes keyboard
-                # The block was visible from first_frame to last_frame in the band
-                # Total visible duration in band = (last - first) frames
-                # Real note duration = visible duration + band traversal time
-                visible_dur = (info['last_frame'] - info['first_frame']) / fps
-                offset = onset + visible_dur
-                raw_notes.append((pitch, hand, onset, offset))
-                ended.append(key)
-        for key in ended:
-            del active[key]
-
-        if fi % 500 == 0 and fi > 0:
-            print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
-                  f"— {len(raw_notes)} notes")
-
-    # Close remaining
-    for key, info in active.items():
-        pitch, color = key
-        hand = hand_map.get(color)
-        onset = info['first_frame'] / fps + time_offset
-        visible_dur = (info['last_frame'] - info['first_frame']) / fps
-        raw_notes.append((pitch, hand, onset, onset + visible_dur))
-
-    raw_notes.sort(key=lambda n: n[2])
-
-    # Merge close notes of same pitch/hand
-    merged = []
-    for pitch, hand, onset, offset in raw_notes:
-        found = False
-        for i in range(len(merged) - 1, max(-1, len(merged) - 30), -1):
-            mp, mh, mon, moff = merged[i]
-            if mp == pitch and mh == hand and onset - moff < merge_tolerance:
-                merged[i] = (mp, mh, mon, max(moff, offset))
-                found = True
-                break
-            if onset - mon > 3.0:
-                break
-        if not found:
-            merged.append((pitch, hand, onset, offset))
-
-    # Filter short notes
-    filtered = [(p, h, on, off) for p, h, on, off in merged
-                if off - on >= min_duration]
-
-    print(f"  Raw: {len(raw_notes)}, merged: {len(merged)}, "
-          f"filtered (>={min_duration}s): {len(filtered)}")
-    return filtered
-
-
-def extract_notes_contour(cap, note_map, y_min, y_max, fall_speed,
-                          colors=None, merge_tolerance=0.06, min_duration=0.12,
-                          sample_step=None, keyboard_y_for_onset=None):
-    """Extract notes by detecting block contours and projecting onset/duration.
-
-    Each block in each frame independently provides:
-      - pitch (from x-position)
-      - onset_time = frame_time + (keyboard_y - block_bottom) / speed
-      - duration = block_height / speed
-      - hand (from color — auto-assigned based on pitch range)
-
-    Multiple frames observing the same block produce multiple observations
-    with nearly identical onset times. These are merged (median onset,
-    median duration) to produce the final note list.
-    """
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    px_per_sec = fall_speed * fps
-
-    # Adaptive sample step: each block needs ~10 observations to merge
-    # reliably. A block is visible for fall_time frames. Sample every
-    # fall_time/10 frames to get 10 obs per block. Cap at step=10 to
-    # keep merge_tolerance reasonable.
-    if sample_step is None:
-        visible_height = y_max - y_min
-        fall_time_frames = visible_height / max(0.1, fall_speed)
-        sample_step = max(1, min(10, int(fall_time_frames / 10)))
-        merge_tolerance = max(0.06, 0.02 * sample_step)
-        n_frames = total // sample_step
-        print(f"  Sample step: {sample_step} frames ({n_frames} frames, "
-              f"merge_tol={merge_tolerance:.2f}s)")
-
-    # keyboard_y_for_onset: the y-coordinate where blocks reach the keyboard.
-    # Used to project block y-position to onset time. Defaults to y_max.
-    onset_ref_y = keyboard_y_for_onset if keyboard_y_for_onset is not None else y_max
-
-    # Build x -> pitch mapping with boundaries.
-    # First, deduplicate notes with nearly identical x-positions (< 5px apart).
-    # When the keyboard detector places a black key at almost the same x as a
-    # white key, the boundary between them is unreliable. Keep the white key.
-    white_semitones_set = {0, 2, 4, 5, 7, 9, 11}
-    pitches_sorted = sorted(note_map.items(), key=lambda kv: kv[1])
-    deduped = []
-    for midi, x in pitches_sorted:
-        if deduped and abs(x - deduped[-1][1]) < 5:
-            # Keep whichever is a white key, or if both same type, keep first
-            prev_midi = deduped[-1][0]
-            prev_is_white = prev_midi % 12 in white_semitones_set
-            curr_is_white = midi % 12 in white_semitones_set
-            if curr_is_white and not prev_is_white:
-                deduped[-1] = (midi, x)
-            # else keep previous (either both white or prev is white)
-        else:
-            deduped.append((midi, x))
-
-    boundaries = []
-    for i, (midi, x) in enumerate(deduped):
-        x_lo = (deduped[i - 1][1] + x) / 2.0 if i > 0 else x - 20
-        x_hi = (x + deduped[i + 1][1]) / 2.0 if i < len(deduped) - 1 else x + 20
-        boundaries.append((midi, x_lo, x_hi, x))
-
-    def x_to_pitch(cx):
-        for midi, x_lo, x_hi, _ in boundaries:
-            if x_lo <= cx <= x_hi:
-                return midi
-        return min(boundaries, key=lambda b: abs(b[3] - cx))[0]
-
-    # Phase 1: Collect observations with color names (hand assigned later)
-    # Scan only the top portion (y_min to y_max) — clean, no keyboard glow.
-    observations = []  # (pitch, color_name, onset_sec, dur_sec)
-
-    for fi in range(0, total, sample_step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        blocks = detect_blocks_in_frame(hsv, y_min, y_max, colors=colors)
-
-        t_now = fi / fps
-        for cx, bw, bh, y_bot, color_name in blocks:
-            pitch = x_to_pitch(cx)
-            if pitch is None:
-                continue
-            # Project onset: how long until this block's bottom reaches keyboard.
-            onset_sec = t_now + max(0, onset_ref_y - y_bot) / px_per_sec
-            dur_sec = bh / px_per_sec
-            observations.append((pitch, color_name, onset_sec, dur_sec))
-
-        if fi % 500 == 0 and fi > 0:
-            print(f"    Frame {fi}/{total} ({100 * fi / total:.0f}%) "
-                  f"— {len(observations)} observations")
-
-    print(f"  {len(observations)} observations from {total // sample_step} frames")
-
-    # Phase 2: Auto-assign hands based on average pitch per color
-    color_pitches = defaultdict(list)
-    for pitch, color_name, onset, dur in observations:
-        color_pitches[color_name].append(pitch)
-
-    if len(color_pitches) >= 2:
-        # Color with higher average pitch = RH (hand 0)
-        color_avg = {c: np.mean(ps) for c, ps in color_pitches.items()}
-        sorted_colors = sorted(color_avg, key=lambda c: -color_avg[c])
-        hand_map = {sorted_colors[0]: 0}  # highest pitch = RH
-        for c in sorted_colors[1:]:
-            hand_map[c] = 1  # lower pitch = LH
-        assignments = ', '.join(f'{c}={"RH" if h==0 else "LH"}' for c, h in hand_map.items())
-        print(f"  Hand assignment: {assignments}")
-    elif len(color_pitches) == 1:
-        # Single color — assign hand by pitch (>=60 = RH)
-        hand_map = {list(color_pitches.keys())[0]: None}
-        print(f"  Single color detected — hand from pitch")
-    else:
-        hand_map = {}
-
-    # Replace color names with hand indices
-    obs_with_hands = [(pitch, hand_map.get(cn), onset, dur)
-                      for pitch, cn, onset, dur in observations]
-
-    # Sort by (pitch, hand, onset) then cluster overlapping onsets
-    obs_with_hands.sort(key=lambda o: (o[0], o[1] or 0, o[2]))
-
-    notes = []
-    i = 0
-    while i < len(obs_with_hands):
-        pitch, hand, onset, dur = obs_with_hands[i]
-        group_onsets = [onset]
-        group_durs = [dur]
-
-        # Grow cluster: merge observations of the SAME block seen across
-        # frames. Chain-merge with max span: each observation must be
-        # within tolerance of the previous AND the total cluster span
-        # can't exceed the note's duration + a small margin.
-        # This prevents multiple distinct notes from being merged when
-        # several blocks of the same pitch are visible simultaneously.
-        j = i + 1
-        last_onset = onset
-        # Use tighter margin for short notes to separate rapid repeated notes,
-        # but keep looser margin for long notes to avoid splitting sustained notes.
-        margin = 0.05 if dur < 0.4 else 0.1
-        max_span = dur + margin
-        while j < len(obs_with_hands):
-            p2, h2, on2, dur2 = obs_with_hands[j]
-            if p2 != pitch or h2 != hand:
-                break
-            if abs(on2 - last_onset) <= merge_tolerance and (on2 - onset) <= max_span:
-                group_onsets.append(on2)
-                group_durs.append(dur2)
-                last_onset = on2
-                j += 1
-            else:
-                break
-
-        # Emit note: use 25th percentile of onsets (reduces bias from
-        # merged contours that inflate onset times), median duration
-        med_onset = float(np.percentile(group_onsets, 25))
-        med_dur = float(np.median(group_durs))
-        if med_dur >= min_duration:
-            notes.append((pitch, hand, med_onset, med_onset + med_dur))
-
-        i = j
-
-    notes.sort(key=lambda n: n[2])
-
-    # Deduplicate: drop same-pitch same-hand notes that overlap in time.
-    # This removes false duplicates from contour detection seeing the same
-    # block at slightly different positions across frames.
-    pre_dedup = len(notes)
-    deduped = []
-    for note in notes:
-        pitch, hand, onset, offset = note
-        is_dup = False
-        for k in range(len(deduped) - 1, max(-1, len(deduped) - 20), -1):
-            dp, dh, don, doff = deduped[k]
-            if dp == pitch and dh == hand and onset < doff:
-                is_dup = True
-                break
-        if not is_dup:
-            deduped.append(note)
-    notes = deduped
-    if len(notes) < pre_dedup:
-        print(f"  Deduplication: {pre_dedup} → {len(notes)} notes "
-              f"(removed {pre_dedup - len(notes)} overlapping duplicates)")
-
-    rh = sum(1 for _, h, _, _ in notes if h == 0)
-    lh = sum(1 for _, h, _, _ in notes if h == 1)
-    print(f"  {len(observations)} obs → {len(notes)} notes ({rh} RH, {lh} LH)")
-    return notes
-
-
 def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
                            keyboard_y_for_onset=None, colors=None,
                            sample_step=None, min_duration=0.08):
@@ -1060,11 +726,22 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
     finished_notes = []
     for track in closed_tracks:
         obs = track['observations']
-        # Recompute onset predictions with the refined speed
+        # Recompute onset predictions with the refined speed.
+        # Filter out observations where y_bot is clamped to the bottom
+        # of the region — the block has reached the keyboard but the
+        # color is still visible, so y_bot is frozen while frame_time
+        # keeps increasing, producing inflated onset predictions.
         onset_preds = []
         for fi, y_bot, bh in obs:
+            if y_bot >= y_max - 2:
+                continue  # clamped to bottom edge
             onset_pred = fi / fps + max(0, onset_ref_y - y_bot) / px_per_sec
             onset_preds.append(onset_pred)
+        if not onset_preds:
+            # All observations clamped — use all as fallback
+            for fi, y_bot, bh in obs:
+                onset_pred = fi / fps + max(0, onset_ref_y - y_bot) / px_per_sec
+                onset_preds.append(onset_pred)
         if not onset_preds:
             continue
         onset = float(np.median(onset_preds))
@@ -1446,8 +1123,15 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
         print(f"  Pitch map: {len(note_map)} notes "
               f"(MIDI {min(note_map)}-{max(note_map)})")
 
+        # Reject if keyboard detector found far fewer keys than blocks
+        # (e.g. hands covering a real piano keyboard)
+        if len(key_positions) >= 15 and len(note_map) < len(key_positions) * 0.5:
+            print(f"  Keyboard detector unreliable: {len(note_map)} notes vs "
+                  f"{len(key_positions)} block positions — falling back to "
+                  f"block-based mapping")
+            note_map = None
         # Calibrate note_map x-coordinates using block positions
-        if len(key_positions) >= 3:
+        elif len(key_positions) >= 3:
             note_map = _calibrate_note_map_with_blocks(
                 note_map, key_positions)
 

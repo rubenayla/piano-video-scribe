@@ -147,13 +147,14 @@ class TestFallingPuppet:
 # ============================================================================
 
 def _extract_note_events(track):
-    """Extract (tick, midi_note) for all note-on events."""
+    """Extract (tick, midi_note) for all note-on events, sorted by (tick, pitch)."""
     abs_tick = 0
     events = []
     for msg in track:
         abs_tick += msg.time
         if msg.type == 'note_on' and msg.velocity > 0:
             events.append((abs_tick, msg.note))
+    events.sort()  # sort by (tick, pitch) — chord note order is arbitrary
     return events
 
 
