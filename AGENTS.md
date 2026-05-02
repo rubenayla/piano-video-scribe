@@ -20,5 +20,6 @@ Output: /path/to/output.mid
 2. **`.agents/notes.md`** — Experiment findings, technical insights
 3. **`.agents/error-log.md`** — Mistakes and lessons learned
 4. **`.agents/tasks.md`** — Task board (TODO / In Progress / Done)
+5. **`.agents/history.md`** — Dated debug-session log (root causes, fixes, results)
 
 See `.agents/README.md` for the full index.
