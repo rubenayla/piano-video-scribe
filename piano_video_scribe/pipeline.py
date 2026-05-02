@@ -18,7 +18,8 @@ from piano_video_scribe.color import (
 from piano_video_scribe.quantization import (
     make_tick_converters, quantize_tick, quantize_tick_smart,
     quantize_onsets_pll, quantize_onsets_viterbi, quantize_onsets_adaptive,
-    quantize_onsets_simple,
+    quantize_onsets_simple, build_shared_local_bpm_lookup,
+    _refine_bpm_for_grid,
 )
 from piano_video_scribe.midi_output import remove_overlaps, make_monophonic, build_track
 from piano_video_scribe.visualization import generate_summary_image
@@ -127,6 +128,10 @@ def main():
             val = getattr(args, fb_key)
             if val is not None:
                 fb_kwargs[fb_key] = val
+        # Pass --frame through so the falling-blocks pipeline's internal
+        # keyboard detection uses the same clean frame as the keys path.
+        if getattr(args, 'frame', None) is not None:
+            fb_kwargs['frame_idx'] = args.frame
         video_notes = detect_falling_notes_pipeline(args.video, None, **fb_kwargs)
         video_notes.sort(key=lambda n: n[2])  # sort by onset time
 
@@ -284,6 +289,18 @@ def main():
         right_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 0]
         left_indices = [i for i, (_, h, _, _) in enumerate(video_notes) if h == 1]
 
+        # Pre-compute a SHARED effective BPM and local-tempo lookup using
+        # both hands together. The default 'simple' quantizer otherwise
+        # runs drift-correction independently per hand, which lets each
+        # hand land on a different effective BPM and slowly desync —
+        # exactly the symptom seen on this video starting at the second
+        # half of measure 1.
+        all_onsets_rel = sorted([video_notes[i][2] - first_onset
+                                 for i in right_indices + left_indices])
+        shared_effective_bpm = _refine_bpm_for_grid(all_onsets_rel, OUT_BPM)
+        shared_local_bpm = build_shared_local_bpm_lookup(
+            all_onsets_rel, shared_effective_bpm)
+
         # Quantize both hands on a SINGLE shared timeline.
         # All onsets are relative to first_onset (the first note in the video,
         # regardless of hand). start_beat adds a common grid offset AFTER
@@ -307,7 +324,11 @@ def main():
             # setting to switch to the adaptive Viterbi if needed.
             quantizer = getattr(args, 'quantizer', None) or 'simple'
             if quantizer == 'simple':
-                on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
+                on_g = list(quantize_onsets_simple(
+                    onsets, OUT_BPM,
+                    effective_bpm=shared_effective_bpm,
+                    local_bpm_lookup=shared_local_bpm,
+                ))
             elif quantizer == 'viterbi':
                 hand_t0 = onsets[0]
                 onsets_shifted = [t - hand_t0 for t in onsets]
@@ -320,6 +341,9 @@ def main():
                 on_g = list(quantize_onsets_adaptive(onsets_shifted, OUT_BPM))
                 hand_grid_offset = round(hand_t0 / s)
                 on_g = [p + hand_grid_offset for p in on_g]
+            elif quantizer == 'pll':
+                on_g = list(quantize_onsets_pll(onsets, OUT_BPM,
+                                                subdivisions=subdivisions))
             else:
                 on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
 

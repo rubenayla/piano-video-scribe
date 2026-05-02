@@ -495,13 +495,16 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
                 note_x_map[next_midi] = right_x
                 extrapolated_whites.add(next_midi)
 
-    # Assign black keys using actual detected positions where available,
-    # falling back to midpoint of flanking white keys.
-    # Skip black keys adjacent to extrapolated edge keys (unreliable position).
+    # Assign black keys using the midpoint of flanking white keys.
+    # The detected black-key x-positions can be off by up to half a white
+    # key width — and a small offset is enough to drop the detector zone
+    # onto an adjacent white key, where falling note bars (toward the white
+    # key) trigger phantom black-key detections. White-key positions are
+    # regularized via linear regression so their midpoints are far more
+    # reliable than the raw black-key detections.
     for wm in list(note_x_map.keys()):
         semi = wm % 12
         if semi in [0, 2, 5, 7, 9]:  # C, D, F, G, A have a sharp to the right
-            # Skip black keys adjacent to extrapolated edge keys
             if wm in extrapolated_whites:
                 continue
             black_midi = wm + 1
@@ -510,20 +513,7 @@ def build_note_x_map(white_keys, black_keys, min_midi_note):
                 continue
             if next_white not in note_x_map:
                 continue
-            midpoint = (note_x_map[wm] + note_x_map[next_white]) // 2
-            # Find closest detected black key to this midpoint
-            best_bk = None
-            best_dist = 999
-            for bk_x in black_keys:
-                dist = abs(bk_x - midpoint)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_bk = bk_x
-            # Use detected position if close enough, else midpoint
-            if best_bk is not None and best_dist < 20:
-                note_x_map[black_midi] = best_bk
-            else:
-                note_x_map[black_midi] = midpoint
+            note_x_map[black_midi] = (note_x_map[wm] + note_x_map[next_white]) // 2
 
     print(f"Built note→x map for {len(note_x_map)} MIDI notes "
           f"(range {min(note_x_map)}–{max(note_x_map)})")
@@ -578,14 +568,21 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
         if pitch % 12 in BLACK_SEMITONES:
             hw = det['black_x_hw']
             if y_black is not None:
-                # Place detector covering most of the black key face.
-                # y_kb_top = top of keyboard, y_bk_bottom = bottom of black keys.
+                # Place the detector at the BOTTOM of the black key body only.
+                # Sampling the full body catches falling note bars (which travel
+                # through the upper part of the body on the way down) as
+                # phantom key presses. The actual key-press glow is most
+                # concentrated near the playing edge of the black key, just
+                # above the white-key face.
                 bk_top = y_kb_top if y_kb_top is not None else y_black - int(avg_white_w * 2)
                 bk_bot = y_bk_bottom if y_bk_bottom is not None else y_black + int(avg_white_w * 0.2)
                 bk_h = bk_bot - bk_top
-                margin = max(1, int(bk_h * 0.1))
-                y_top = bk_top + margin
-                y_bot = bk_bot - margin
+                # Sample only the bottom 25% of the black key — small enough
+                # to dodge falling bars in mid-air, tall enough to register
+                # the key-press glow reliably.
+                bottom_frac = det.get('black_bottom_frac', 0.25)
+                y_top = bk_bot - max(2, int(bk_h * bottom_frac))
+                y_bot = bk_bot - max(1, int(bk_h * 0.05))
             else:
                 y_top = y_white - int(kb_h * det['black_y_top_pct'])
                 y_bot = y_white - int(kb_h * det['black_y_bot_pct'])

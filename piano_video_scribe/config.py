@@ -137,10 +137,11 @@ Examples:
     p.add_argument('--detector', choices=['keys', 'falling-blocks'], default=None,
                    help='Note detection method: falling-blocks (default, detects notes from '
                         'falling colored blocks) or keys (key-lighting saturation fallback)')
-    p.add_argument('--quantizer', choices=['simple', 'viterbi', 'adaptive'], default=None,
+    p.add_argument('--quantizer', choices=['simple', 'viterbi', 'adaptive', 'pll'], default=None,
                    help='Quantization method: simple (default, round-to-nearest with '
-                        'drift correction), viterbi (DP optimal grid assignment), or '
-                        'adaptive (2-pass viterbi with local BPM warping — use when '
+                        'drift correction), viterbi (DP optimal grid assignment), '
+                        'adaptive (2-pass viterbi with local BPM warping), or '
+                        'pll (online phase + BPM tracking via EMA — use when '
                         'video has significant tempo changes)')
     p.add_argument('--glow-margin', type=int, default=None,
                    help='Falling-blocks detector: vertical margin above keyboard for glow '

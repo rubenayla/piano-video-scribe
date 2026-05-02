@@ -150,6 +150,11 @@ from pianovideoscribe import (
     quantize_onsets_viterbi,
     quantize_onsets_adaptive,
 )
+from piano_video_scribe.quantization import (
+    quantize_onsets_pll,
+    quantize_onsets_simple,
+    _refine_bpm_for_grid,
+)
 
 
 def apply_tempo_drift(onsets, grid_positions, nominal_bpm, drift_rate):
@@ -220,6 +225,151 @@ def test_adaptive_regression_constant_tempo():
             f"[{case_name}] Adaptive != Viterbi at constant tempo: "
             f"{result_adaptive} != {result_viterbi}"
         )
+
+
+# ---------------------------------------------------------------------------
+# PLL quantizer tests
+# ---------------------------------------------------------------------------
+
+def _make_constant_wrong_bpm_onsets(nominal_bpm, true_bpm, grid_positions):
+    """Build onsets sampled at true_bpm given expected grid_positions in 16ths.
+
+    The caller will pass nominal_bpm to the quantizer; the PLL should adapt
+    its internal grid spacing toward true_bpm and recover grid_positions.
+    """
+    s_true = 60.0 / true_bpm / 4
+    return [pos * s_true for pos in grid_positions]
+
+
+def test_pll_matches_viterbi_at_constant_correct_tempo():
+    """With no drift and correct BPM, PLL should land on the expected grid."""
+    bpm = 90
+    for case_name, onsets, expected in TEST_CASES:
+        t0 = onsets[0]
+        shifted = [t - t0 for t in onsets]
+        result = quantize_onsets_pll(shifted, bpm)
+        # Shift result so it starts at the expected first position (PLL
+        # returns raw grid indices; the pipeline adds the hand_grid_offset).
+        offset = expected[0] - result[0]
+        normalized = [r + offset for r in result]
+        assert normalized == expected, (
+            f"[{case_name}] PLL at correct tempo: {normalized} != {expected}"
+        )
+
+
+def test_pll_adapts_to_constant_bpm_offset():
+    """If nominal BPM is off from the true tempo by 2%, the old PLL tracked
+    only phase and let quantization drift into the next measure.  The fixed
+    PLL also tracks grid spacing and should recover correct positions
+    within a few onsets.
+    """
+    # 32 onsets, two 16ths apart on a 117.6 BPM grid
+    expected = list(range(0, 64, 2))
+    onsets = _make_constant_wrong_bpm_onsets(120, 117.6, expected)
+
+    result = quantize_onsets_pll(onsets, 120)
+    # Allow initial transient to settle — first 8 onsets may lag, but the
+    # tail must land perfectly.  (Prior PLL drifted monotonically; this one
+    # should converge.)
+    assert result[-8:] == expected[-8:], (
+        f"PLL did not adapt to 2% slow tempo.\n"
+        f"expected tail: {expected[-8:]}\n"
+        f"     got tail: {result[-8:]}"
+    )
+
+
+def test_pll_adapts_to_gradual_drift():
+    """PLL should track a slow linear BPM drift."""
+    bpm = 90
+    drifted = apply_tempo_drift(RAW_ONSETS_8THS, EXPECTED_GRID_8THS, bpm, 0.25)
+    result = quantize_onsets_pll(drifted, bpm)
+    offset = EXPECTED_GRID_8THS[0] - result[0]
+    normalized = [r + offset for r in result]
+    assert normalized == EXPECTED_GRID_8THS, (
+        f"PLL failed on drifted 8ths: {normalized} != {EXPECTED_GRID_8THS}"
+    )
+
+
+def test_pll_period_clamp_prevents_runaway():
+    """A single bad onset shouldn't push the grid outside ±10% of nominal."""
+    bpm = 120
+    s = 60.0 / bpm / 4
+    # Normal onsets then one 50%-late outlier then back to normal
+    onsets = [i * 2 * s for i in range(6)]
+    onsets += [onsets[-1] + 3 * s]  # outlier at +3/16 instead of +2/16
+    onsets += [onsets[-1] + 2 * s for _ in range(5)]
+    # Recompute last 5 based on last previous
+    onsets = [i * 2 * s for i in range(6)]
+    onsets.append(onsets[-1] + 3 * s)
+    for _ in range(5):
+        onsets.append(onsets[-1] + 2 * s)
+
+    result = quantize_onsets_pll(onsets, bpm)
+    # After the outlier, spacing between consecutive grid positions should
+    # stay close to 2 (the true cadence), not balloon.
+    tail_diffs = [result[i+1] - result[i] for i in range(len(result) - 5, len(result) - 1)]
+    assert all(1 <= d <= 3 for d in tail_diffs), (
+        f"PLL spacing after outlier: {tail_diffs}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _refine_bpm_for_grid tests
+# ---------------------------------------------------------------------------
+
+def test_refine_bpm_catches_2pct_slow_tempo():
+    """Refinement must find the true BPM within the ±5% window."""
+    true_bpm = 117.6
+    expected = list(range(0, 40, 2))
+    onsets = _make_constant_wrong_bpm_onsets(120, true_bpm, expected)
+    effective = _refine_bpm_for_grid(onsets, 120.0)
+    assert abs(effective - true_bpm) < 0.5, (
+        f"Refinement missed true BPM: got {effective}, expected ~{true_bpm}"
+    )
+
+
+def test_refine_bpm_keeps_nominal_when_correct():
+    """If onsets are already on the nominal grid, refinement should not move."""
+    bpm = 120.0
+    s = 60.0 / bpm / 4
+    onsets = [i * 2 * s for i in range(40)]
+    effective = _refine_bpm_for_grid(onsets, bpm)
+    assert abs(effective - bpm) < 0.1
+
+
+def test_refine_bpm_short_input_returns_nominal():
+    """Too few onsets → nominal (no reliable refinement possible)."""
+    effective = _refine_bpm_for_grid([0.0, 0.5, 1.0], 120.0)
+    assert effective == 120.0
+
+
+# ---------------------------------------------------------------------------
+# Synthetic regression for the "F drifts onto next bar" bug
+# ---------------------------------------------------------------------------
+#
+# Made-up two-bar phrase sampled 2% slow against a 120 BPM nominal.
+# The test checks that the last onset (the last 16th of bar 2) does not
+# get pushed onto the bar-3 downbeat.  The positions are defined here,
+# not taken from any real song.
+
+def test_simple_quantizer_stable_end_of_bar_onset():
+    """Under 2% slow tempo, a last-16th onset must stay inside its bar.
+
+    Made-up two-bar phrase with onsets at 16th positions
+    [0, 3, 4, 15, 16, 19, 20, 31].  With the old ±1.5% refinement window
+    the final onset quantized to 32 (bar-3 downbeat); with the widened
+    window + RMS objective it must stay at 31.
+    """
+    nominal = 120.0
+    true_bpm = 117.6
+    expected = [0, 3, 4, 15, 16, 19, 20, 31]
+    onsets = _make_constant_wrong_bpm_onsets(nominal, true_bpm, expected)
+    grid = quantize_onsets_simple(onsets, nominal)
+    assert grid[-1] == 31, (
+        f"Last onset drifted onto next bar's downbeat: "
+        f"grid={grid}, expected {expected}"
+    )
+    assert grid == expected, f"grid={grid}, expected={expected}"
 
 
 if __name__ == "__main__":

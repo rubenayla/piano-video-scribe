@@ -387,7 +387,14 @@ def build_pitch_map(spacing, offset, n_white, c_idx, black_positions, base_octav
             note_in_oct = 6
             oct -= 1
 
-    # Black keys
+    # Black keys: use the midpoint of the flanking white keys.
+    # The detected black-key x-positions can be off by a substantial
+    # fraction of a key width (variance accumulates from per-frame contour
+    # noise in the auto-detected block list), and a small offset is enough
+    # to land inside an adjacent white key — when that white key is
+    # struck, its bar's anti-aliased edge then triggers a phantom black-key
+    # detection. White-key positions come from a regularized linear fit
+    # so their midpoint is far more reliable than the raw black-block list.
     for wm in sorted(note_map.keys()):
         semi = wm % 12
         if semi in (0, 2, 5, 7, 9):  # C D F G A have sharp
@@ -395,15 +402,7 @@ def build_pitch_map(spacing, offset, n_white, c_idx, black_positions, base_octav
             nxt = wm + 2
             if nxt not in note_map:
                 continue
-            mid_x = (note_map[wm] + note_map[nxt]) / 2.0
-            # Use detected position if close
-            best_x, best_d = mid_x, 999
-            for (bk_x,) in black_positions:
-                d = abs(bk_x - mid_x)
-                if d < best_d:
-                    best_d = d
-                    best_x = bk_x
-            note_map[bk_midi] = best_x if best_d < spacing * 0.4 else mid_x
+            note_map[bk_midi] = (note_map[wm] + note_map[nxt]) / 2.0
 
     return note_map
 
@@ -1116,7 +1115,14 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
     from piano_video_scribe.keyboard import detect_keyboard as _detect_kb
     from piano_video_scribe.keyboard import build_note_x_map as _build_nxm
     try:
-        kb_result = _detect_kb(cap, frame_idx=None)
+        # Honor a caller-supplied --frame for keyboard detection. Without it,
+        # auto-detect can pick an intro frame whose keyboard reading is
+        # polluted by falling bars or title-card artifacts, shifting the
+        # entire pitch map by a fraction of a key. Falling through to
+        # frame_idx=None preserves the previous behavior when --frame is
+        # not passed.
+        frame_idx_arg = kwargs.get('frame_idx', None)
+        kb_result = _detect_kb(cap, frame_idx=frame_idx_arg)
         wk, bk = kb_result[0], kb_result[1]
         note_map = _build_nxm(wk, bk, 21)
         print(f"  Keyboard detector: {len(wk)} white, {len(bk)} black keys")
@@ -1130,7 +1136,13 @@ def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **k
                   f"{len(key_positions)} block positions — falling back to "
                   f"block-based mapping")
             note_map = None
-        # Calibrate note_map x-coordinates using block positions
+        # Calibrate note_map x-coordinates using block positions.
+        # Keyboard.py white-key detection often lands on the LEFT EDGE of
+        # each white key (the dark separator line between keys triggers
+        # the segment break), shifting the whole map by half a key-width
+        # relative to where bars actually fall. The calibration's affine
+        # transform aligns the keyboard map to where the bars are — that
+        # IS the truth, so always apply it when it converges.
         elif len(key_positions) >= 3:
             note_map = _calibrate_note_map_with_blocks(
                 note_map, key_positions)

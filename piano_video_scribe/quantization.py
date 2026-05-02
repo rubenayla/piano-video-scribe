@@ -11,7 +11,9 @@ import statistics
 # Simple round-to-nearest quantizer (default)
 # ---------------------------------------------------------------------------
 
-def quantize_onsets_simple(onset_secs: list[float], bpm: float) -> list[int]:
+def quantize_onsets_simple(onset_secs: list[float], bpm: float,
+                            effective_bpm: float | None = None,
+                            local_bpm_lookup=None) -> list[int]:
     """Snap each onset independently to the nearest 16th-note grid position.
 
     Two-stage correction:
@@ -20,6 +22,12 @@ def quantize_onsets_simple(onset_secs: list[float], bpm: float) -> list[int]:
        detector where fall speed ≠ exact musical tempo).
     2. Per-interval BPM correction: estimates local BPM from each interval
        and warps to match the nominal grid.
+
+    When called per-hand independently, each hand develops its own
+    effective BPM and its own local-BPM warp — the two hands then drift
+    out of phase even when the source video has them in lock-step.
+    Pass `effective_bpm` (and optionally `local_bpm_lookup`) computed once
+    over the COMBINED onset set so both hands snap to the same grid.
     """
     s = 60.0 / bpm / 4  # 16th note duration
     if not onset_secs:
@@ -28,8 +36,16 @@ def quantize_onsets_simple(onset_secs: list[float], bpm: float) -> list[int]:
     # Stage 1: Drift correction — find the effective BPM that best aligns
     # onsets to even (8th-note) grid positions.  Search is narrow (±1%)
     # to avoid accidentally snapping to a wrong tempo.
-    effective_bpm = _refine_bpm_for_grid(onset_secs, bpm)
+    if effective_bpm is None:
+        effective_bpm = _refine_bpm_for_grid(onset_secs, bpm)
     s_eff = 60.0 / effective_bpm / 4
+
+    if local_bpm_lookup is not None:
+        # Caller supplied a shared (time → local_bpm) function so warping
+        # uses the same per-region tempo for every hand.
+        local_bpms = [local_bpm_lookup(t) for t in onset_secs]
+        warped = warp_onsets(onset_secs, local_bpms, effective_bpm)
+        return [round(t / s_eff) for t in warped]
 
     if len(onset_secs) >= 4:
         grid0 = [round(t / s_eff) for t in onset_secs]
@@ -40,16 +56,43 @@ def quantize_onsets_simple(onset_secs: list[float], bpm: float) -> list[int]:
     return [round(t / s_eff) for t in onset_secs]
 
 
+def build_shared_local_bpm_lookup(onset_secs, effective_bpm):
+    """Build a (time → local_bpm) lookup from a COMBINED onset list.
+
+    Use this once on all hands' onsets together so per-hand quantization
+    can warp to a single, shared tempo curve — without it, each hand
+    estimates a slightly different local tempo and the hands drift apart.
+    """
+    if len(onset_secs) < 4:
+        return lambda t: effective_bpm
+    s_eff = 60.0 / effective_bpm / 4
+    sorted_onsets = sorted(onset_secs)
+    grid0 = [round(t / s_eff) for t in sorted_onsets]
+    local_bpms = estimate_local_bpm(sorted_onsets, grid0, effective_bpm)
+    # Step-function lookup by binary search.
+    import bisect
+    def lookup(t):
+        i = bisect.bisect_right(sorted_onsets, t) - 1
+        if i < 0:
+            return local_bpms[0]
+        if i >= len(local_bpms):
+            return local_bpms[-1]
+        return local_bpms[i]
+    return lookup
+
+
 def _refine_bpm_for_grid(onset_secs: list[float], nominal_bpm: float,
-                          max_pct: float = 1.5, step: float = 0.01) -> float:
-    """Find the effective BPM (within ±max_pct% of nominal) that maximizes
-    the number of onsets landing on 8th-note grid positions (even grid16).
+                          max_pct: float = 5.0, step: float = 0.05) -> float:
+    """Find the effective BPM (within ±max_pct% of nominal) that minimizes
+    the RMS distance from each onset to the nearest 16th-note grid slot.
 
     This corrects for systematic drift caused by fall-speed calibration
-    errors in the detector.  The search range is kept tight to avoid
-    accidentally locking onto a harmonic (double/half time).
+    errors in the detector or a slightly wrong nominal BPM.  Uses a full
+    16th-grid fit (not just even-8th slots) so the objective is sharp even
+    for slow pieces with lots of dotted-eighth / offbeat-16th onsets.
 
     Returns the refined BPM, or nominal_bpm if no improvement is found.
+    Logs the choice so drift is visible.
     """
     if len(onset_secs) < 10:
         return nominal_bpm
@@ -57,20 +100,33 @@ def _refine_bpm_for_grid(onset_secs: list[float], nominal_bpm: float,
     low = nominal_bpm * (1 - max_pct / 100)
     high = nominal_bpm * (1 + max_pct / 100)
 
+    def rms_grid_error(candidate_bpm: float) -> float:
+        s16 = 60.0 / candidate_bpm / 4
+        sq = 0.0
+        for t in onset_secs:
+            pos = t / s16
+            e = pos - round(pos)
+            sq += e * e
+        return (sq / len(onset_secs)) ** 0.5
+
     best_bpm = nominal_bpm
-    s_nom = 60.0 / nominal_bpm / 4
-    best_on_grid = sum(1 for t in onset_secs if round(t / s_nom) % 2 == 0)
+    best_err = rms_grid_error(nominal_bpm)
 
     candidate = low
     while candidate <= high:
-        s16 = 60.0 / candidate / 4
-        on_grid = sum(1 for t in onset_secs if round(t / s16) % 2 == 0)
-        if on_grid > best_on_grid:
-            best_on_grid = on_grid
+        err = rms_grid_error(candidate)
+        if err < best_err:
+            best_err = err
             best_bpm = candidate
         candidate += step
 
-    return round(best_bpm, 2)
+    best_bpm = round(best_bpm, 2)
+    if abs(best_bpm - nominal_bpm) > 1e-6:
+        print(f"  Drift correction: nominal BPM {nominal_bpm} → effective {best_bpm} "
+              f"(grid RMS {best_err:.4f})")
+    else:
+        print(f"  Drift correction: kept nominal BPM {nominal_bpm} (grid RMS {best_err:.4f})")
+    return best_bpm
 
 
 # ---------------------------------------------------------------------------
@@ -104,30 +160,52 @@ def quantize_tick_smart(tick, eighth, sixteenth):
     return round(tick / sixteenth) * sixteenth
 
 
-def quantize_onsets_pll(onset_secs, bpm, alpha=0.1, subdivisions=4):
+def quantize_onsets_pll(onset_secs, bpm, alpha=0.1, alpha_period=0.05,
+                        subdivisions=4):
     """Phase-locked loop quantizer: snap onsets to grid positions.
 
-    Maintains a running phase offset (EMA) that self-corrects for BPM drift
-    and per-note jitter.  Resets phase after large gaps (>= 3 grid units) to
-    avoid carrying accumulated error from dense passages into sparse ones.
+    Tracks two state variables online and adapts both as notes arrive:
+      - phase  — the grid's zero offset (corrects constant time shift)
+      - s      — the grid spacing, i.e. the BPM itself (corrects tempo drift)
+
+    The period tracker is the piece actually advertised by the docstring:
+    if the real tempo is a few percent off the nominal BPM, the implied
+    spacing between successive quantized positions will disagree with `s`,
+    and `s` is pulled toward that implied spacing via EMA.  Phase still
+    corrects per-note jitter on top.
+
+    Resets phase (but not period) after gaps >= 2.5 grid units so
+    accumulated error from dense passages doesn't leak into sparse ones.
+    The period is never reset — BPM drift is assumed to be slow and global.
 
     Args:
+        alpha: EMA weight for phase correction (per onset).
+        alpha_period: EMA weight for grid-spacing (BPM) correction. Smaller
+            than alpha so BPM tracks more slowly than phase.
         subdivisions: grid units per beat. 4 = 16th notes (default),
             3 = triplet 8th notes, 6 = triplet 16th notes.
     """
-    s = 60.0 / bpm / subdivisions  # grid unit duration
+    s = 60.0 / bpm / subdivisions  # current grid unit duration (mutable)
+    s0 = s
     phase = 0.0
     initialized = False
     results = []
+    last_t = None
+    last_idx = None
 
     for i, t in enumerate(onset_secs):
-        # Reset phase after large gaps (accumulated error doesn't carry over).
-        # Snap to nearest EIGHTH (2 sixteenths) since notes after gaps are
-        # almost always on 8th positions, not 16ths.
-        if i > 0 and (t - onset_secs[i - 1]) > 2.5 * s:
-            grid_pos_8th = t / (2 * s)  # position in eighths
-            idx_8th = round(grid_pos_8th)
-            phase = t - idx_8th * 2 * s
+        # Reset phase after large gaps.  Drop period-tracking memory across
+        # the gap too (an unknown number of grid units passed silently).
+        # Threshold chosen at 6 sixteenths (1.5 beats) — shorter than that
+        # is normal rhythmic spacing (dotted-8th, 8th+8th-rest, etc.) and
+        # must not trigger a resync.  Snap to the nearest 16th grid slot
+        # (not 8th) so we don't lose precision for offbeat sixteenths.
+        if i > 0 and (t - onset_secs[i - 1]) > 6 * s:
+            grid_pos = t / s
+            idx = round(grid_pos)
+            phase = t - idx * s
+            last_t = None
+            last_idx = None
 
         grid_pos = (t - phase) / s
         idx = round(grid_pos)
@@ -139,7 +217,19 @@ def quantize_onsets_pll(onset_secs, bpm, alpha=0.1, subdivisions=4):
             initialized = True
         else:
             phase += alpha * error
+            # Period (BPM) tracking: implied spacing between consecutive
+            # quantized positions should equal `s`.  EMA-pull `s` toward
+            # what the onsets actually imply.
+            if last_t is not None and last_idx is not None and idx > last_idx:
+                implied_s = (t - last_t) / (idx - last_idx)
+                # Clamp drift to ±10% of the initial grid so a single
+                # misquantized pair can't runaway the tempo.
+                lo, hi = s0 * 0.9, s0 * 1.1
+                implied_s = max(lo, min(hi, implied_s))
+                s += alpha_period * (implied_s - s)
 
+        last_t = t
+        last_idx = idx
         results.append(idx)
 
     # For combined grids (subdivisions=12), snap each index to the nearest

@@ -1,6 +1,37 @@
 <!-- consult selectively — grep, never read in full -->
 # Error Log
 
+## 2026-04-22 — Shipped PDF without comparing first measures to video (Naughty / Matilda)
+
+**What happened:** Ran the pipeline on a Synthesia video of "Naughty" from Matilda the Musical and reported the PDF/MIDI as done after only checking macro stats (note count, per-octave histogram, RH/LH ranges). The histogram looked "reasonable" (RH centered on oct 3-4, LH on oct 2-3) so I declared success. User pushed back and asked me to verify m1. A frame-by-frame check revealed the first LH chord (should be A2-C3-F3 simultaneous) was detected as F#3, C#3, C3, F3 spread over ~1 second, and many RH notes were garbage bass notes. The sheet was wrong.
+
+**Root cause:** Two failures compounded:
+1. I used the *default* `--detector falling-blocks`, whose x→pitch calibration was off by ~20px on this video. That shifted every white-key note a half-step right (A→A#, C→C#, F→F#) and spread chord onsets across the beat. `--detector keys` (with `y_offset_top: 20` in config) produced clean output.
+2. I accepted note-count and octave-histogram sanity checks as "verification." They are not. Octave histograms can look plausible even when every note is wrong. Only a direct comparison of video frames to MIDI at specific timestamps proves correctness.
+
+**Prevention:**
+- Always end with a **frame-vs-MIDI comparison table** at ≥4 timestamps (first real keypress plus 3 more spread across the song). Columns: `video_time | video_notes | midi_notes | match`. If that table is not in the final message, the task is not done.
+- Automatic sanity checks (histogram, hand-range median, accidental ratio, chord simultaneity, intro-noise count) are first-pass filters for gross errors — never substitutes for the frame check.
+- Heuristic: if `--key C` is set and >30% of output notes are black keys, the x-calibration is off — try `--detector keys` or a different `--frame`.
+- Heuristic: if a visually simultaneous chord in the video is spread over more than ~50ms in the MIDI, either BPM is wrong or the detector is mis-tracking — do not accept "close enough."
+- Added rule 1a to `AGENTS.md` and a mandatory "Verification" section to `~/.claude/commands/PianoVideoScribe.md` (command file, not a SKILL.md).
+
+**Status:** Fixed for this video by switching to `--detector keys` + `config.json` with `y_offset_top: 20`, `start-time: 10.5`. Verification table posted in the response.
+
+## 2026-04-22 — 31-minute stall waiting on piped Python script (no buffering flush)
+
+**What happened:** Launched `python ~/repos/piano-video-scribe/pianovideoscribe.py ... > /tmp/log 2>&1 &` in the background and polled the log file to detect completion. The log stayed empty for ~31 minutes while the Python process was actually running fine — stdout was block-buffered because it was piped, so nothing was flushed until the process ended (or was killed). I burned wall-clock (and cache) polling an invisible process instead of diagnosing the buffer.
+
+**Root cause:** CPython block-buffers stdout when it's not a TTY. `python script.py > file` accumulates output in an internal 4–8 KB buffer per stream and only flushes on exit or explicit `sys.stdout.flush()`. Running in background with log redirection hit this path.
+
+**Prevention:**
+- When running a long script in the background and watching its log, always pass `python -u` (unbuffered) or set `PYTHONUNBUFFERED=1`.
+- For ffmpeg/OpenCV-heavy scripts, also consider `stdbuf -oL -eL <cmd>` as a wrapper if `-u` isn't available (e.g. via a non-Python entry point).
+- If a log file is empty for longer than one expected iteration of the script, the problem is almost always buffering or a hang before the first print — not slow progress. Check `ps` for the process and strace/py-spy it rather than waiting longer.
+- Do not `Monitor` or `TaskOutput(block=true)` with timeouts in the tens of minutes hoping output will appear. Kill the run, add `-u`, and restart.
+
+**Status:** Fixed by switching to `python -u ... > /tmp/log 2>&1` for all subsequent runs. Progress visible in seconds.
+
 ## 2026-03-19 — Used audio transcription instead of video-based note extraction for Synthesia video
 
 **What happened:** Agent ran the full pipeline using audio transcription (`piano_transcription_inference`) to get MIDI notes from a Synthesia video that had a clearly visible keyboard with colored note bars. The audio transcriber produced wrong pitches (e.g., F# instead of G, E instead of B), leading to incorrect sheet music. The video was only used for hand separation (green/blue color detection), not for note extraction.
