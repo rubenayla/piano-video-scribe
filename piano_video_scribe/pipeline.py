@@ -307,72 +307,82 @@ def main():
         shared_local_bpm.warp_lookup = build_shared_warp_lookup(
             all_onsets_rel, shared_effective_bpm)
 
-        # Quantize both hands on a SINGLE shared timeline.
-        # All onsets are relative to first_onset (the first note in the video,
-        # regardless of hand). start_beat adds a common grid offset AFTER
-        # quantization so the first note lands on the right beat in the measure.
-        effective_start_beat = args.start_beat if args.start_beat is not None else 1.0
-        # start_grid_offset: grid units to add after quantization
+        # Quantize ALL onsets on a SINGLE shared timeline in one pass,
+        # then split the resulting grid positions back per hand. There is
+        # no scenario where the two hands of one performance should be
+        # quantized to independent grids — separate calls would let drift
+        # correction or local-tempo estimation diverge per hand and pull
+        # them out of sync. Single combined call by construction.
+        if RIGHT_SUB != LEFT_SUB:
+            raise ValueError(
+                f"Hand subdivisions must match for shared quantization "
+                f"(got RIGHT={RIGHT_SUB}, LEFT={LEFT_SUB}). Triplet/straight "
+                f"split is not supported in single-pass mode."
+            )
+        SUB = RIGHT_SUB
+        s = 60.0 / OUT_BPM / SUB  # grid unit duration in seconds
+
+        # All onsets relative to first_onset, in original video_notes order.
+        # We need to remember each onset's index so we can split back per
+        # hand after quantization.
+        onsets_all = [video_notes[i][2] - first_onset
+                      for i in range(len(video_notes))]
+        offsets_all = [video_notes[i][3] - first_onset
+                       for i in range(len(video_notes))]
+        # Sort by onset time, keeping original indices.
+        order = sorted(range(len(video_notes)), key=lambda i: onsets_all[i])
+        sorted_onsets = [onsets_all[i] for i in order]
+
+        quantizer = getattr(args, 'quantizer', None) or 'simple'
+        if quantizer == 'simple':
+            on_g_sorted = list(quantize_onsets_simple(
+                sorted_onsets, OUT_BPM,
+                effective_bpm=shared_effective_bpm,
+                local_bpm_lookup=shared_local_bpm,
+            ))
+        elif quantizer == 'viterbi':
+            on_g_sorted = list(quantize_onsets_viterbi(sorted_onsets, OUT_BPM))
+        elif quantizer == 'adaptive':
+            on_g_sorted = list(quantize_onsets_adaptive(sorted_onsets, OUT_BPM))
+        elif quantizer == 'pll':
+            on_g_sorted = list(quantize_onsets_pll(sorted_onsets, OUT_BPM,
+                                                    subdivisions=SUB))
+        else:
+            on_g_sorted = list(quantize_onsets_simple(sorted_onsets, OUT_BPM))
+
+        # Un-sort back to original index order.
+        on_g_all = [0] * len(video_notes)
+        for sort_pos, orig_i in enumerate(order):
+            on_g_all[orig_i] = on_g_sorted[sort_pos]
+
+        # Derive each note's grid offset from quantized onset + raw duration.
+        off_g_all = []
+        for i in range(len(video_notes)):
+            raw_dur = offsets_all[i] - onsets_all[i]
+            dur_grid = max(1, round(raw_dur / s))
+            off_g_all.append(on_g_all[i] + dur_grid)
+
+        # Split back per hand.
+        r_on_grid = [on_g_all[i] for i in right_indices]
+        r_off_grid = [off_g_all[i] for i in right_indices]
+        l_on_grid = [on_g_all[i] for i in left_indices]
+        l_off_grid = [off_g_all[i] for i in left_indices]
+
+        # start_beat: grid units to add after quantization
         # (subdivisions per beat * beats of silence before first note)
-        start_grid_offset = int(round((effective_start_beat - 1.0) * RIGHT_SUB))
+        effective_start_beat = args.start_beat if args.start_beat is not None else 1.0
+        start_grid_offset = int(round((effective_start_beat - 1.0) * SUB))
         if start_grid_offset > 0:
             print(f"  start_beat={effective_start_beat}, grid_offset={start_grid_offset}")
 
-        def quantize_hand(indices, subdivisions):
-            """Quantize note onsets for one hand on the shared timeline."""
-            # All times relative to first_onset — shared reference for both hands
-            onsets = [video_notes[i][2] - first_onset for i in indices]
-            offsets = [video_notes[i][3] - first_onset for i in indices]
-            s = 60.0 / OUT_BPM / subdivisions  # grid unit duration
-
-            # Simple quantizer: round each onset to nearest grid position.
-            # No drift, no inter-note dependencies. Use 'viterbi' quantizer
-            # setting to switch to the adaptive Viterbi if needed.
-            quantizer = getattr(args, 'quantizer', None) or 'simple'
-            if quantizer == 'simple':
-                on_g = list(quantize_onsets_simple(
-                    onsets, OUT_BPM,
-                    effective_bpm=shared_effective_bpm,
-                    local_bpm_lookup=shared_local_bpm,
-                ))
-            elif quantizer == 'viterbi':
-                hand_t0 = onsets[0]
-                onsets_shifted = [t - hand_t0 for t in onsets]
-                on_g = list(quantize_onsets_viterbi(onsets_shifted, OUT_BPM))
-                hand_grid_offset = round(hand_t0 / s)
-                on_g = [p + hand_grid_offset for p in on_g]
-            elif quantizer == 'adaptive':
-                hand_t0 = onsets[0]
-                onsets_shifted = [t - hand_t0 for t in onsets]
-                on_g = list(quantize_onsets_adaptive(onsets_shifted, OUT_BPM))
-                hand_grid_offset = round(hand_t0 / s)
-                on_g = [p + hand_grid_offset for p in on_g]
-            elif quantizer == 'pll':
-                on_g = list(quantize_onsets_pll(onsets, OUT_BPM,
-                                                subdivisions=subdivisions))
-            else:
-                on_g = list(quantize_onsets_simple(onsets, OUT_BPM))
-
-            # Derive offset grid from onset grid + quantized duration
-            off_g = []
-            for i_idx, on_pos in enumerate(on_g):
-                raw_dur = offsets[i_idx] - onsets[i_idx]
-                dur_grid = max(1, round(raw_dur / s))
-                off_g.append(on_pos + dur_grid)
-            return on_g, off_g
-
-        r_on_grid, r_off_grid = quantize_hand(right_indices, RIGHT_SUB)
-        l_on_grid, l_off_grid = quantize_hand(left_indices, LEFT_SUB)
-
         # Apply start_beat offset: shift all grid positions so the first note
-        # of the piece lands on the right beat in the measure.
+        # of the piece lands on the right beat in the measure. Same
+        # subdivision for both hands (enforced above), same offset.
         if start_grid_offset > 0:
             r_on_grid = [p + start_grid_offset for p in r_on_grid]
             r_off_grid = [p + start_grid_offset for p in r_off_grid]
-            # Scale offset for LH if it uses different subdivisions
-            lh_grid_offset = int(round((effective_start_beat - 1.0) * LEFT_SUB))
-            l_on_grid = [p + lh_grid_offset for p in l_on_grid]
-            l_off_grid = [p + lh_grid_offset for p in l_off_grid]
+            l_on_grid = [p + start_grid_offset for p in l_on_grid]
+            l_off_grid = [p + start_grid_offset for p in l_off_grid]
 
         right_events = []
         left_events = []
