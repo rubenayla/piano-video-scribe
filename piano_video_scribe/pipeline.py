@@ -19,7 +19,7 @@ from piano_video_scribe.quantization import (
     make_tick_converters, quantize_tick, quantize_tick_smart,
     quantize_onsets_pll, quantize_onsets_viterbi, quantize_onsets_adaptive,
     quantize_onsets_simple, build_shared_local_bpm_lookup,
-    _refine_bpm_for_grid,
+    build_shared_warp_lookup, _refine_bpm_for_grid,
 )
 from piano_video_scribe.midi_output import remove_overlaps, make_monophonic, build_track
 from piano_video_scribe.visualization import generate_summary_image
@@ -299,6 +299,12 @@ def main():
                                  for i in right_indices + left_indices])
         shared_effective_bpm = _refine_bpm_for_grid(all_onsets_rel, OUT_BPM)
         shared_local_bpm = build_shared_local_bpm_lookup(
+            all_onsets_rel, shared_effective_bpm)
+        # Attach a continuous warp function built over BOTH hands so the
+        # piecewise-integrated warp doesn't diverge per hand. Each hand's
+        # quantizer call uses the same t→warped_t map, keeping them
+        # locked to a single tempo curve over the whole song.
+        shared_local_bpm.warp_lookup = build_shared_warp_lookup(
             all_onsets_rel, shared_effective_bpm)
 
         # Quantize both hands on a SINGLE shared timeline.

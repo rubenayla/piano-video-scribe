@@ -723,8 +723,32 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
 
     # --- 6c. Compute notes from closed tracks using (refined) fall speed ---
     finished_notes = []
+    rejected_static = 0
     for track in closed_tracks:
         obs = track['observations']
+        # Reject static blobs — UI overlays (subscribe button, like icon,
+        # bell, watermark) sit at fixed pixel positions for many frames,
+        # satisfying the same color/pitch/region match as a falling bar
+        # but never actually descending. A real falling bar's y_bot moves
+        # monotonically by ~fall_speed px/frame across its lifetime; a
+        # static UI element's y_bot wiggles within a few pixels.
+        # Two-pronged check:
+        #  (a) Long tracks (≥3 frames) must descend at least 30% of what
+        #      a real bar would (fall_speed × frame_span).
+        #  (b) Any track that lasts ≥6 frames yet never moved >25 px is
+        #      definitely a static blob — reject regardless of fall_speed.
+        if len(obs) >= 3:
+            y_bots = [yb for _, yb, _ in obs]
+            frames_obs = [fi for fi, _, _ in obs]
+            descent = max(y_bots) - min(y_bots)
+            frame_span = max(frames_obs) - min(frames_obs)
+            min_expected_descent = max(8, fall_speed * frame_span * 0.3)
+            if descent < min_expected_descent and frame_span >= 6:
+                rejected_static += 1
+                continue
+            if frame_span >= 6 and descent < 25:
+                rejected_static += 1
+                continue
         # Recompute onset predictions with the refined speed.
         # Filter out observations where y_bot is clamped to the bottom
         # of the region — the block has reached the keyboard but the
@@ -758,7 +782,17 @@ def extract_notes_tracking(cap, note_map, y_min, y_max, fall_speed,
             finished_notes.append((track['pitch'], track['color'],
                                    onset, onset + duration))
 
-    print(f"  {len(finished_notes)} raw notes from {total // sample_step} frames")
+    # Drop notes mapped to the bottom octave of an 88-key piano (< MIDI 28
+    # = E1). Real piano music essentially never plays this low; any such
+    # output is from a UI overlay (subscribe icon, watermark) or
+    # extrapolated keyboard cells beyond the actually visible keys.
+    pre_count = len(finished_notes)
+    finished_notes = [n for n in finished_notes if n[0] >= 28]
+    rejected_subbass = pre_count - len(finished_notes)
+
+    print(f"  {len(finished_notes)} raw notes from {total // sample_step} frames"
+          + (f" ({rejected_static} static UI tracks rejected)" if rejected_static else "")
+          + (f" ({rejected_subbass} sub-bass artifacts dropped)" if rejected_subbass else ""))
 
     # --- 7. Hand assignment ---
     color_pitches = defaultdict(list)

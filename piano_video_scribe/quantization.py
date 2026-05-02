@@ -43,8 +43,17 @@ def quantize_onsets_simple(onset_secs: list[float], bpm: float,
     if local_bpm_lookup is not None:
         # Caller supplied a shared (time → local_bpm) function so warping
         # uses the same per-region tempo for every hand.
-        local_bpms = [local_bpm_lookup(t) for t in onset_secs]
-        warped = warp_onsets(onset_secs, local_bpms, effective_bpm)
+        # If `local_bpm_lookup` also exposes a `warp_lookup` attribute
+        # (a callable t → warped_t built once over BOTH hands' onsets),
+        # use it directly so the warp is identical regardless of which
+        # hand's onsets we're quantizing — preventing per-hand drift in
+        # the cumulative integration.
+        warp_lookup = getattr(local_bpm_lookup, 'warp_lookup', None)
+        if warp_lookup is not None:
+            warped = [warp_lookup(t) for t in onset_secs]
+        else:
+            local_bpms = [local_bpm_lookup(t) for t in onset_secs]
+            warped = warp_onsets(onset_secs, local_bpms, effective_bpm)
         return [round(t / s_eff) for t in warped]
 
     if len(onset_secs) >= 4:
@@ -78,6 +87,53 @@ def build_shared_local_bpm_lookup(onset_secs, effective_bpm):
         if i >= len(local_bpms):
             return local_bpms[-1]
         return local_bpms[i]
+    return lookup
+
+
+def build_shared_warp_lookup(onset_secs, effective_bpm):
+    """Build a continuous (time → warped_time) lookup from a COMBINED onset list.
+
+    `warp_onsets` integrates local_bpm/nominal piecewise between
+    consecutive onsets. When called per-hand, each hand's onset density
+    differs and the piecewise integration drifts apart even with a
+    shared local-BPM curve. Building one warp function over the union
+    of all onsets and looking it up per-hand keeps both hands on a
+    single, consistent time map.
+
+    Returns a callable `t → warped_t` that linearly interpolates between
+    the warped values at the combined onset times.
+    """
+    import bisect
+    if not onset_secs:
+        return lambda t: t
+    sorted_onsets = sorted(set(onset_secs))
+    if len(sorted_onsets) < 2:
+        return lambda t: t
+    s_eff = 60.0 / effective_bpm / 4
+    grid0 = [round(t / s_eff) for t in sorted_onsets]
+    local_bpms = estimate_local_bpm(sorted_onsets, grid0, effective_bpm)
+    # Cumulative warped values: warped[i+1] = warped[i] + dt * avg(lbpm[i],lbpm[i+1])/nominal
+    warped = [sorted_onsets[0]]
+    for i in range(1, len(sorted_onsets)):
+        dt = sorted_onsets[i] - sorted_onsets[i - 1]
+        avg = (local_bpms[i - 1] + local_bpms[i]) / 2.0
+        warped.append(warped[-1] + dt * avg / effective_bpm)
+
+    def lookup(t):
+        if t <= sorted_onsets[0]:
+            # Extrapolate using the first segment's local rate.
+            return warped[0] + (t - sorted_onsets[0])
+        if t >= sorted_onsets[-1]:
+            # Extrapolate using the last segment's local rate.
+            return warped[-1] + (t - sorted_onsets[-1])
+        i = bisect.bisect_right(sorted_onsets, t) - 1
+        # Linear interpolation between sorted_onsets[i] and [i+1]
+        t0, t1 = sorted_onsets[i], sorted_onsets[i + 1]
+        w0, w1 = warped[i], warped[i + 1]
+        if t1 == t0:
+            return w0
+        return w0 + (w1 - w0) * (t - t0) / (t1 - t0)
+
     return lookup
 
 
