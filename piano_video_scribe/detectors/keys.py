@@ -12,6 +12,7 @@ import numpy as np
 
 from piano_video_scribe.keyboard import build_detector_regions
 from piano_video_scribe.color import _classify_hand_from_hue
+from piano_video_scribe.backend import KeySampler, get_backend_name
 
 
 def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
@@ -65,13 +66,22 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
         x_left, x_right, yt, yb = det_regions[pitch]
         pitch_slices.append((pitch, max(0, x_left), x_right, max(0, yt), yb))
 
-    # Active notes: pitch → (hand, onset_frame)
+    # Active notes: pitch → (hand, onset_frame, peak_sat, prev_sat)
     active = {}
     notes = []
     # Debounce: track consecutive frames above SAT_ON per pitch.
     # A note-on requires 2+ consecutive frames to filter single-frame
     # glows from adjacent key presses bleeding into black key zones.
     pending_on = {}  # pitch → (frame_idx, hand)
+    # Re-strike rising-edge threshold: a sat jump of this much *while* a
+    # note is already active triggers a note-off + immediate note-on
+    # (splits rapid repeated strikes that don't fully decay between hits).
+    RESTRIKE_RISE = 6.0
+    RESTRIKE_MIN_SAT = 60.0
+    # Relative-peak floor: end a note when sat falls below this fraction of
+    # its peak (kills long noise tails after brief strikes — e.g. animation
+    # backgrounds bleeding into a key column).
+    PEAK_FLOOR_FRAC = 0.45
 
     # Auto-detect the first playing frame: scan forward from start_frame
     # looking for saturated pixels on the keyboard face (where keys light up
@@ -111,6 +121,13 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
     start_frame = play_start
     t0 = _time.time()
 
+    # Vectorized per-key sampler. Auto-selects torch (MPS/CUDA/CPU) or numpy.
+    frame_h_int = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_w_int = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    sampler = KeySampler(pitch_slices, frame_h_int, frame_w_int, v_min=30)
+    pitch_to_idx = {int(p): i for i, p in enumerate(sampler.pitches)}
+    print(f"  Backend: {get_backend_name()}")
+
     for f_idx in range(start_frame, total_frames, frame_step):
         ret, frame = cap.read()
         if not ret:
@@ -127,20 +144,11 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
 
         confirmed_this_frame = []  # track new onsets to detect bar artifacts
 
-        # First pass: compute saturation for all keys this frame
-        frame_sat = {}
-        for pitch, x1, x2, y1, y2 in pitch_slices:
-            if y1 >= y2 or x1 >= x2:
-                frame_sat[pitch] = 0.0
-                continue
-            V_MIN = 30
-            region_s = sat_channel[y1:y2, x1:x2]
-            region_v = val_channel[y1:y2, x1:x2]
-            bright_mask = region_v >= V_MIN
-            if np.any(bright_mask):
-                frame_sat[pitch] = float(np.mean(region_s[bright_mask]))
-            else:
-                frame_sat[pitch] = 0.0
+        # First pass: compute saturation for all keys this frame.
+        # Vectorized over keys via KeySampler — replaces per-key Python loop.
+        mean_sats = sampler.per_key_mean_sat(hsv)
+        frame_sat = {int(p): float(mean_sats[pitch_to_idx[int(p)]])
+                     for p in pitches}
 
         for pitch, x1, x2, y1, y2 in pitch_slices:
             if y1 >= y2 or x1 >= x2:
@@ -180,7 +188,7 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                 if pitch in pending_on and f_idx - pending_on[pitch][0] <= frame_step:
                     # Second consecutive frame — confirm note on
                     hand = pending_on.pop(pitch)[1]
-                    active[pitch] = (hand, f_idx - frame_step)
+                    active[pitch] = (hand, f_idx - frame_step, sat, sat)
                     confirmed_this_frame.append(pitch)
                 else:
                     # First frame — classify hand and store as pending
@@ -200,24 +208,45 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                 del pending_on[pitch]
 
             note_off = False
-            if pitch in active and sat < SAT_OFF:
-                note_off = True
-            elif pitch in active and sat > thresh:
-                # Saturation is high — check if the hue still matches a
-                # configured hand color.  If not, a non-musical overlay
-                # (e.g. phone nav bar) has replaced the note bar.
-                region_h = hsv[y1:y2, x1:x2, 0]
-                region_s = hsv[y1:y2, x1:x2, 1]
-                s_mask = region_s > 50
-                hue = float(np.mean(region_h[s_mask])) if np.sum(s_mask) >= 3 else None
-                if _classify_hand_from_hue(hue, green_is_right, colors) is None:
+            restrike = False
+            if pitch in active:
+                hand, onset_frame, peak_sat, prev_sat = active[pitch]
+                # Update peak
+                if sat > peak_sat:
+                    peak_sat = sat
+                # Re-strike: rising edge while note is held (splits merged
+                # repeated strikes whose glow doesn't decay to baseline).
+                rise = sat - prev_sat
+                if (rise >= RESTRIKE_RISE and sat >= RESTRIKE_MIN_SAT
+                        and (f_idx - onset_frame) >= 3 * max(1, frame_step)):
+                    restrike = True
+                # Relative-peak floor: end if sat fell well below this
+                # note's own peak (kills noise-tail "held" notes).
+                peak_floor = max(SAT_OFF, peak_sat * PEAK_FLOOR_FRAC)
+                if sat < peak_floor:
                     note_off = True
-            if note_off and pitch in active:
-                hand, onset_frame = active.pop(pitch)
+                elif sat > thresh:
+                    # Saturation is high — check if the hue still matches a
+                    # configured hand color.  If not, a non-musical overlay
+                    # (e.g. phone nav bar) has replaced the note bar.
+                    region_h = hsv[y1:y2, x1:x2, 0]
+                    region_s = hsv[y1:y2, x1:x2, 1]
+                    s_mask = region_s > 50
+                    hue = float(np.mean(region_h[s_mask])) if np.sum(s_mask) >= 3 else None
+                    if _classify_hand_from_hue(hue, green_is_right, colors) is None:
+                        note_off = True
+                # Persist updated peak/prev_sat unless we're closing the note
+                if not (note_off or restrike):
+                    active[pitch] = (hand, onset_frame, peak_sat, sat)
+            if (note_off or restrike) and pitch in active:
+                hand, onset_frame, _, _ = active.pop(pitch)
                 onset_sec = onset_frame / fps
                 offset_sec = f_idx / fps
                 if offset_sec - onset_sec > 0.02:
                     notes.append((pitch, hand, onset_sec, offset_sec))
+                # Re-arm immediately as a new strike on the rising edge
+                if restrike:
+                    active[pitch] = (hand, f_idx, sat, sat)
 
         if f_idx % 500 == 0 and f_idx > start_frame:
             elapsed = _time.time() - t0
@@ -228,7 +257,7 @@ def extract_notes_from_video(cap, note_x_map, y_sample_top, y_sample_bot,
                   f"— {rate:.0f} fps, ETA {eta:.0f}s")
 
     # Close remaining active notes
-    for pitch, (hand, onset_frame) in active.items():
+    for pitch, (hand, onset_frame, _peak, _prev) in active.items():
         onset_sec = onset_frame / fps
         offset_sec = (total_frames - 1) / fps
         if offset_sec - onset_sec > 0.02:
