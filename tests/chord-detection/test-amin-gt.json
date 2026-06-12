@@ -1,0 +1,22 @@
+[
+  {
+    "start_beat": 0,
+    "end_beat": 4,
+    "chord": "A:min"
+  },
+  {
+    "start_beat": 4,
+    "end_beat": 8,
+    "chord": "F:maj"
+  },
+  {
+    "start_beat": 8,
+    "end_beat": 12,
+    "chord": "C:maj"
+  },
+  {
+    "start_beat": 12,
+    "end_beat": 16,
+    "chord": "G:maj"
+  }
+]

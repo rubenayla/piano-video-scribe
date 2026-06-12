@@ -300,13 +300,21 @@ def detect_keyboard(cap, frame_idx=None):
     # Find keyboard geometry by scanning pixel brightness.
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Top of keyboard: scan a white key column upward from y_white.
+    # Top of keyboard: scan a white key column upward from y_black.
+    # Start from y_black (not y_white) to skip the white-key face area, which
+    # can have thin decorative borders that would cause a false early stop and
+    # produce a y_kb_top inside the face (making bk_h negative in the detector).
     mid_wk = white_keys[len(white_keys) // 2]
     y_kb_top = 0
-    for y in range(y_white - 5, 0, -1):
+    consec = 0
+    for y in range(y_black - 5, 0, -1):
         if int(gray[y, mid_wk]) < 100:
-            y_kb_top = y + 1
-            break
+            consec += 1
+            if consec >= 3:
+                y_kb_top = y + consec
+                break
+        else:
+            consec = 0
 
     # Bottom of black keys: scan a black key column downward from y_black
     # until brightness rises (white key face appears). If it stays dark
@@ -577,6 +585,13 @@ def build_detector_regions(note_x_map, white_keys, y_white, cfg=None, y_black=No
                 bk_top = y_kb_top if y_kb_top is not None else y_black - int(avg_white_w * 2)
                 bk_bot = y_bk_bottom if y_bk_bottom is not None else y_black + int(avg_white_w * 0.2)
                 bk_h = bk_bot - bk_top
+                # Sanity check: a bad y_kb_top (e.g. stopped by a thin decorative
+                # line inside the white-key face) can make bk_h zero or negative,
+                # collapsing the detector to 1 px right where V ≈ 0. Fall back to
+                # a y_black-anchored estimate which is always reliable.
+                if bk_h < int(avg_white_w * 0.5):
+                    bk_top = y_black - int(avg_white_w * 1.5)
+                    bk_h = bk_bot - bk_top
                 # Sample only the bottom 25% of the black key — small enough
                 # to dodge falling bars in mid-air, tall enough to register
                 # the key-press glow reliably.

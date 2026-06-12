@@ -5,6 +5,43 @@ from collections import defaultdict
 from mido import Message, MetaMessage, MidiTrack
 
 
+def dedup_same_tick_pitch(events):
+    """Collapse same-(tick, pitch) note_on collisions into a single note.
+
+    Quantization can map two distinct strikes onto the same on-tick;
+    if both also share an off-tick, downstream remove_overlaps emits
+    2 ons + 1 off (a stuck note). Normalize here: for each pitch,
+    when multiple note_ons land on the same tick, keep one and use
+    the latest matching note_off (longest resulting duration).
+    """
+    pairs = []  # list of (on_tick, off_tick, pitch, vel)
+    pending = {}  # pitch -> FIFO of (on_tick, vel)
+    for ev in sorted(events, key=lambda e: (e[0], e[1] != 'note_off')):
+        tick, ev_type, pitch, vel = ev
+        if ev_type == 'note_on':
+            pending.setdefault(pitch, []).append((tick, vel))
+        else:
+            stack = pending.get(pitch)
+            if stack:
+                on_tick, on_vel = stack.pop(0)
+                pairs.append((on_tick, tick, pitch, on_vel))
+
+    # Group by (pitch, on_tick) → take max off_tick, keep first vel
+    by_key = {}
+    for on_t, off_t, pitch, vel in pairs:
+        key = (pitch, on_t)
+        cur = by_key.get(key)
+        if cur is None or off_t > cur[0]:
+            by_key[key] = (off_t, vel if cur is None else cur[1])
+
+    result = []
+    for (pitch, on_t), (off_t, vel) in by_key.items():
+        result.append((on_t, 'note_on', pitch, vel))
+        result.append((off_t, 'note_off', pitch, 0))
+    result.sort(key=lambda e: (e[0], e[1] != 'note_off'))
+    return result
+
+
 def remove_overlaps(events):
     """Cut held notes when a new onset arrives, but keep chords intact.
 
@@ -30,6 +67,15 @@ def remove_overlaps(events):
             for p in to_end:
                 result.append((abs_tick, 'note_off', p, 0))
                 del active[p]
+            # Defensive: if the same pitch is already active at this tick
+            # (duplicate from quantization collapse), close the prior
+            # instance instead of silently overwriting it — otherwise the
+            # second note_on becomes a stuck note in the output.
+            if pitch in active:
+                prev_tick = active[pitch]
+                close_tick = max(prev_tick + 1, abs_tick)
+                result.append((close_tick, 'note_off', pitch, 0))
+                del active[pitch]
             active[pitch] = abs_tick
             result.append(ev)
         elif ev_type == 'note_off':

@@ -320,3 +320,80 @@ Stage 3 (`HARDCODED_DEFAULTS`) already had `'detector': 'falling-blocks'` as a f
 - When the target file/location is ambiguous, ASK. A 5-second question saves minutes of wrong work.
 - Don't silently pick the first match when multiple candidates exist or when the match clearly doesn't fit the context.
 - This is the same class of error as the 2026-03-30 "acted on ambiguous instruction" entry — when unsure, ask.
+
+## 2026-05-26 — keys detector silently missed all black key notes (Beat It)
+
+**What happened:** Ran the pipeline on a Synthesia video of "Beat It" (Michael Jackson) with `--detector keys`. Output had 680 notes but 0 F# notes, even though F# is clearly visible in the video. Key auto-detected as C major instead of E minor. User noticed F# missing.
+
+**Root cause:** `detect_keyboard` found `y_kb_top=1033` instead of the true ~745. It scanned upward from y_white-5=1052 and stopped at a thin decorative 4-pixel dark horizontal border at y=1029–1032 (part of the white key face graphic). This is above y_bk_bottom=952, making `bk_h = y_bk_bottom - y_kb_top = 952 - 1033 = -81`. Negative `bk_h` in `build_detector_regions` collapsed the black key detector zone to 1px at y=950:951, where the bar's V≈2 (below V_MIN=30), so all black keys read `frame_sat=0` → never detected.
+
+**Fix (keyboard.py):**
+1. Changed y_kb_top scan to start from y_black-5 (above the black keys) rather than y_white-5, skipping the white-key face area where decorative borders live.
+2. Added consecutive-dark requirement (≥3 rows) to skip single-pixel artifacts.
+3. Added sanity check in `build_detector_regions`: if `bk_h < avg_white_w * 0.5`, fall back to `y_black - avg_white_w * 1.5` as bk_top. Ensures the detector always gets a meaningful zone even if y_kb_top is wrong.
+
+**Prevention:**
+- When verifying output, check `key auto-detected` in pipeline output — if it says C major on a clearly Em/Am/Fm song, all black keys were missed.
+- After any run, check the note pitch-class distribution (count by note name) and verify black keys are present if the song has any.
+- The sanity check fallback in `build_detector_regions` is the defensive last line; the y_kb_top scan fix is the root-cause fix.
+
+## 2026-06-04 — Claimed lead-sheet chords "on the downbeat" without zooming the render (Beat It)
+
+**What happened:** Rebuilt the lead-sheet chord engine (measure-synchronous detection) and told the user the chords now "sit on the downbeats", based on (a) an XML tick analysis showing every `<harmony>` was the first child of its measure and (b) a *thumbnail* render. The user immediately spotted that the chord symbols were rendered ~a 16th-note to the RIGHT of the downbeat on many measures — obvious at normal zoom, invisible in a thumbnail. Wasted the user's time by presenting an unverified "fixed".
+
+**Root cause (two layers):**
+1. *Process:* verified the data (XML beats) but not the actual rendered artifact at readable zoom. "Harmony is first child in the XML" is necessary but NOT sufficient — the renderer can still place it elsewhere. AGENTS.md rule 1 requires verifying the real output; a thumbnail is not verification of symbol-to-note alignment.
+2. *Technical:* MuseScore does NOT anchor a chord symbol to a note that is *tied over* the barline (a tie-stop on the downbeat). It drifts the symbol to the next onset. Beat It's riff is syncopated, so melody notes routinely tie across the bar exactly where chords change → ~53/99 chord symbols rendered a 16th late. Confirmed with an A/B render: fresh-onset downbeat anchors correctly, tie-stop downbeat drifts. Negative `<offset>` on the harmony is ignored by MuseScore (tested, no effect).
+
+**Fix (lead_sheet.py, build_musicxml):** re-strike the melody at chord-change downbeats — split any melody note that spans a chord tick at that tick, with no tie, so the downbeat is a fresh onset the chord can anchor to. Only notes that actually cross a change are touched; every measure still sums to a full bar. Verified by zooming the render on the previously-broken measures.
+
+**Prevention:**
+- After generating any notation, render AND zoom to readable size on the specific feature you're claiming is correct (chord-to-note alignment, accidentals, ties). Never claim placement correctness off a thumbnail or off XML structure alone.
+- Renderer-specific gotcha: a chord symbol over a tied-over (tie-stop) downbeat drifts right in MuseScore. Keep downbeats at chord changes as fresh onsets.
+
+### 2026-06-04 (addendum) — wrong mental model: chords belong at the bar downbeat
+
+After fixing the tie-stop anchoring (above), I still snapped each chord symbol to the **bar downbeat**. User: "that blue C should go with that blue A note — they go together in reality." The data proved it: the left-hand C triad and the melody A4 are both struck at offset 720 (beat 1.75), but I placed the C on beat 1, tearing it off the note it sounds with. This is also what "the melody is shifted relative to the chords" meant in the very first message — I'd misread it as chord *lag* and never checked the actual strike ticks.
+
+**Root cause:** assumed a lead-sheet convention (chords on downbeats) instead of reading where the chords are actually played. Beat It's chords are syncopated and the strike offset varies per bar (0/480/720/960/…), so there is no single downbeat to snap to.
+
+**Fix (lead_sheet.py `_strike_tick`):** anchor each chord at the melody (right-hand) onset nearest the left-hand chord attack, not the barline. 95/99 chords now land exactly on a melody note (was 45). Detection (one chord per bar) is unchanged; only placement moved.
+
+**Prevention:** for alignment between two streams (chords vs melody), read the actual onset ticks of BOTH and check they coincide — don't assume either belongs on a metric grid. When the user says two things "go together," verify by comparing their tick values, not by eye on a thumbnail.
+
+### 2026-06-04 — Beat It lead-sheet chords drift ~1.5 beats across the song — the QUANTIZER WARP, not the BPM
+
+**Symptom:** chords wander relative to the barlines across the song (beat 1.75 early, drifting to 1.5/2.0/…). User: "is the song even properly timed?"
+
+**FIRST (WRONG) DIAGNOSIS — recorded as a lesson:** I fit a constant bar period to the chord-strike ticks *of the output MIDI* and got 3854 ticks/bar = 137.5 BPM (conc 0.981 vs 0.784 at 138). Concluded the real tempo was 137.5 and `--bpm 138` was slightly too fast. Rewrote `_refine_bpm_for_grid` to a bar-phase objective + stopped integer-rounding BPM, "validated" on a simulation and on the *quantized* onsets (which gave 137.55). **All of that was diagnosing the symptom as the cause.** Re-running the real pipeline still drifted, and capturing the RAW (pre-quantization) onsets showed the truth: raw chord strikes sit at **138.0** (conc 0.990) — the performance is metronomic at 138. The 137.5 only appeared in the already-corrupted *output*. The refiner change was reverted.
+
+**ACTUAL ROOT CAUSE:** the local-tempo **warp** applies a constant global stretch. `estimate_local_bpm` reads ~138.3–138.5 for steady-138 data (per-note 16th spacing reads slightly fast; with frame jitter, `BPM = k/interval` is also convex so it biases high). `build_shared_warp_lookup` then multiplies every interval by `local_bpm/effective_bpm ≈ 1.003` and integrates — a steady stretch that compounds to ~1.5 beats over the song, dragging clean 138 strikes onto a 137.5-drifting grid. Proof: raw strikes pure-rounded at 138 → conc@3840 = **0.989** (no drift); the same strikes through the warp → **0.787** (drift).
+
+**FIX (`quantization.py`, `build_shared_warp_lookup`):** the warp must only *redistribute* timing locally (fix rush/drag), never change the *global* rate — that is `effective_bpm`'s job. After building the cumulative warp, rescale it so the warped span equals the raw span. A constant-tempo warp becomes the identity; genuine local corrections survive. Beat It strikes: conc@3840 0.787 → **0.989**, bar = 138.0. All 14 `test_quantization.py` still pass. Re-transcribed end-to-end: drift gone, chords now land at consistent groove positions (downbeat / "and of 1") instead of smearing.
+
+**Prevention:**
+- **Diagnose tempo from RAW onsets, never the quantized output** — the quantizer can manufacture the very drift you're measuring. Add a raw-onset dump (env-gated) and measure there.
+- A warp/local-tempo correction must be span-preserving; verify a constant-tempo input is a no-op through it.
+- When a "fix" validates on a simulation/proxy but not on a real re-run, the proxy is wrong — get the real intermediate data before claiming success.
+
+### 2026-06-04 — MuseScore 4 "file is corrupted" — note <type> not matching <duration>
+
+**Symptom:** MS4 dialog "File … is corrupted / contains errors" on open. MuseScore 3 and music21 parse it fine; MS4's stricter validator rejects it. MS4 CLI export crashed *without* producing output.
+
+**Cause:** `lead_sheet._note_xml` wrote a single `<note>` using `_nearest_type(duration)` — the closest representable value. For durations that aren't a clean note value (2.5 beats = 2400 ticks, 2160, 2640, 3120, 3360 …) the emitted `<type>` implied a different length than `<duration>` (e.g. duration 2400 but `type=half`+dot → 2880). 18 such notes in the Beat It sheet. A 2.5-beat span is not one note; it must be a half **tied** to an eighth.
+
+**Fix:** `_decompose_duration()` greedily splits any duration into representable components (whole … 32nd, dotted variants); `_note_xml` emits them as tied notes (pitched) or consecutive rests, chaining the outer tie flags across components so every note has `<type>` consistent with `<duration>`. Verified: 0 type/duration mismatches, MS4 now exports a valid PDF, MS3 renders cleanly.
+
+**Prevention:** every emitted `<note>`'s `<type>`(+dots) must equal its `<duration>`; assert this in any MusicXML writer. To validate a MusicXML for MS4 specifically: check per-note type==duration and per-measure duration sum — music21/MS3 parsing success is NOT sufficient (they're lenient where MS4 is strict).
+
+## 2026-06-11 — falling-blocks detector mapped every note to a white key (Billie Jean, 360p)
+- **Symptom:** transcribing Billie Jean (F# minor) from a PlutaX tutorial yielded 0–1% black keys — musically impossible for F# minor (F#, C#, G# are all black). The bassline came out all naturals (E/B instead of F#/C#/E).
+- **Root cause:** the default `falling-blocks` detector snapped block x-centers to white keys only on this video. The keyboard detection itself was fine (23 black keys found, note_map included F#2/C#2/G# etc.) — the failure was in the falling-blocks sampling, not the pitch map. Low resolution (360p; YouTube signature challenge blocked higher formats in yt-dlp 2026.02.04) made it worse.
+- **Fix:** `--detector keys`. Immediately gave 62%/49% black keys and the correct bassline (F#2 C#2 E2 B1...). 
+- **Prevention:** sanity-check black-key ratio against the key signature right after extraction. Near-0% black in a sharp/flat key (or >30% black in a natural key) means the detector is mis-mapping — switch detector or reframe before exporting. Don't trust note-count/octave-histogram checks alone.
+
+## 2026-06-11 — "verified" a transcription whose rhythm was wrong (Billie Jean), and the quantizer drifts the tempo on steady patterns
+- **Software failure:** the default `simple` quantizer + `_refine_bpm_for_grid` shifted Billie Jean's grid 117→116 BPM and snapped onsets independently. A pure straight-eighth intro (must be 64 identical 480-tick intervals) came out with 4 defects: three onsets a sixteenth early (480→240) + one 720 gap. Identical repeating patterns are NOT rendered identically → reads as the tempo "shifting." Full brief + repro + fix plan: `.agents/investigations/rhythm-quantization-pattern-drift.md`.
+- **Agent failure (mine):** I checked pitch names at 4 timestamps + black-key ratio + song structure, then declared the output "verified." None of those look at inter-onset intervals, so the rhythm bug was invisible to my checks. I handed over a PDF and called it correct. The user caught the drift immediately by eye.
+- **Root cause of the agent failure:** treated "spot-checked some notes" as verification. Pitch correctness is necessary but not sufficient — a transcription can have every note right and every duration wrong.
+- **Prevention:** verifying a transcription MUST include a rhythm check. Concretely: take the most obviously-repeating passage, compute its inter-onset intervals, and confirm they're identical where the music is identical (put the histogram in the response). A repeating ostinato whose intervals aren't all equal = fail, regardless of how right the pitches are. Never call a sheet "verified" off pitch/black-key checks alone again.

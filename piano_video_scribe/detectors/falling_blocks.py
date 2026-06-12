@@ -1074,16 +1074,29 @@ def _calibrate_note_map_with_blocks(note_map, key_positions):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def detect_falling_notes_pipeline(video_path, output_path, base_octave=None, **kwargs):
+def detect_falling_notes_pipeline(video_path, output_path, base_octave=None,
+                                  max_height=1080, **kwargs):
     """Full pipeline: video -> MIDI via falling block detection."""
     print(f"\n{'=' * 60}")
     print(f"Falling Block Note Detection")
     print(f"{'=' * 60}")
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
+    raw_cap = cv2.VideoCapture(video_path)
+    if not raw_cap.isOpened():
         print(f"ERROR: Cannot open video: {video_path}", file=sys.stderr)
         sys.exit(1)
+
+    src_h = int(raw_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    src_w = int(raw_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    if max_height and max_height > 0 and src_h > max_height:
+        from piano_video_scribe.video_io import ResizingCapture
+        cap = ResizingCapture(raw_cap, max_height)
+        print(f"Resizing frames: {src_w}x{src_h} -> "
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+              f"(scale={cap.scale:.3f})")
+    else:
+        cap = raw_cap
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

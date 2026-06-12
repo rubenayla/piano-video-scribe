@@ -19,3 +19,7 @@ tests/*/output-video-summary.png
 
 # Tools (cloned separately)
 tools/
+
+# Tool/session junk
+.playwright-mcp/
+.mscbackup/
