@@ -21,9 +21,13 @@ from piano_video_scribe.quantization import (
     quantize_onsets_simple, build_shared_local_bpm_lookup,
     build_shared_warp_lookup, _refine_bpm_for_grid,
 )
-from piano_video_scribe.midi_output import remove_overlaps, make_monophonic, build_track
+from piano_video_scribe.midi_output import (
+    dedup_same_tick_pitch, remove_overlaps, make_monophonic, build_track,
+)
 from piano_video_scribe.visualization import generate_summary_image
 from piano_video_scribe.detectors.keys import extract_notes_from_video
+from piano_video_scribe.detectors.keys_refine import refine_notes_via_narrow_trace
+from piano_video_scribe.detectors.keys_continuity import extract_notes_continuity
 
 
 def main():
@@ -63,10 +67,22 @@ def main():
     print()
 
     # --- Load video ---
-    cap = cv2.VideoCapture(args.video)
-    if not cap.isOpened():
+    raw_cap = cv2.VideoCapture(args.video)
+    if not raw_cap.isOpened():
         print(f"ERROR: Cannot open video: {args.video}", file=sys.stderr)
         sys.exit(1)
+    src_h = int(raw_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    src_w = int(raw_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    max_h = getattr(args, 'max_height', 1080) or 0
+    if max_h > 0 and src_h > max_h:
+        from piano_video_scribe.video_io import ResizingCapture
+        cap = ResizingCapture(raw_cap, max_h)
+        print(f"Resizing frames: {src_w}x{src_h} -> "
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+              f"(scale={cap.scale:.3f})")
+    else:
+        cap = raw_cap
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -132,6 +148,7 @@ def main():
         # keyboard detection uses the same clean frame as the keys path.
         if getattr(args, 'frame', None) is not None:
             fb_kwargs['frame_idx'] = args.frame
+        fb_kwargs['max_height'] = getattr(args, 'max_height', 1080)
         video_notes = detect_falling_notes_pipeline(args.video, None, **fb_kwargs)
         video_notes.sort(key=lambda n: n[2])  # sort by onset time
 
@@ -148,6 +165,32 @@ def main():
             print("ERROR: No notes detected in video.", file=sys.stderr)
             sys.exit(1)
 
+    elif args.midi is None and args.detector == 'keys-continuity':
+        # CONTINUITY MODE: per-pitch saturation time-series + attack/release
+        print("\n--- Step 3: Extract notes via continuity detector ---")
+        cont_yt = y_kb_top + 5
+        cont_yb = y_kb_top + max(10, int((y_bk_bottom - y_kb_top) * 0.30))
+        cont_start = frame_idx
+        if args.start_time is not None:
+            cont_start = max(cont_start, int(args.start_time * fps))
+        video_notes = extract_notes_continuity(
+            cap, note_x_map, cont_yt, cont_yb,
+            fps, total_frames, green_is_right, cfg['colors'],
+            start_frame=cont_start, white_keys=white_keys, cfg=cfg,
+            y_black=y_black, y_kb_top=y_kb_top, y_bk_bottom=y_bk_bottom,
+        )
+        if args.end_time is not None:
+            video_notes = [n for n in video_notes if n[2] <= args.end_time]
+        if args.start_time is not None:
+            video_notes = [n for n in video_notes if n[2] >= args.start_time]
+        right_count = sum(1 for _, h, _, _ in video_notes if h == 0)
+        left_count = sum(1 for _, h, _, _ in video_notes if h == 1)
+        print(f"Extracted {len(video_notes)} notes: right={right_count}, left={left_count}")
+        cap.release()
+        if not video_notes:
+            print("ERROR: No notes detected in video.", file=sys.stderr)
+            sys.exit(1)
+
     elif args.midi is None:
         # VIDEO-ONLY MODE (key-press): scan frames for key state changes
         print("\n--- Step 3: Extract notes from video ---")
@@ -157,6 +200,19 @@ def main():
             start_frame=frame_idx, frame_step=1, white_keys=white_keys, cfg=cfg,
             y_black=y_black, start_time=args.start_time, y_kb_top=y_kb_top,
             y_bk_bottom=y_bk_bottom)
+
+        # --- Narrow-column refinement: split merged re-strikes / trim noise tails ---
+        # Operates on raw (unfiltered) saturation in a 9-pixel column under
+        # each long note. Counters the v_min=30 + bright-mean filter inside
+        # KeySampler that flattens within-note variation.
+        if not getattr(args, 'no_refine_keys', False) and video_notes:
+            refine_yt = y_kb_top + 5
+            refine_yb = y_kb_top + max(10, int((y_bk_bottom - y_kb_top) * 0.30))
+            video_notes = refine_notes_via_narrow_trace(
+                video_notes, args.video, note_x_map,
+                y_top=refine_yt, y_bot=refine_yb, fps=fps,
+                max_height=getattr(args, 'max_height', 0) or 0,
+            )
 
         # --- End-of-music detection ---
         # Scan backward from the last frame to find the last frame with lit keys.
@@ -333,7 +389,27 @@ def main():
         order = sorted(range(len(video_notes)), key=lambda i: onsets_all[i])
         sorted_onsets = [onsets_all[i] for i in order]
 
-        quantizer = getattr(args, 'quantizer', None) or 'simple'
+        # Debug hook: PVS_DUMP_ONSETS=<path> dumps the exact pre-quantization
+        # onsets (seconds, sorted) so detector timing can be inspected
+        # separately from quantizer behaviour.
+        dump_path = os.environ.get('PVS_DUMP_ONSETS')
+        if dump_path:
+            import json
+            with open(dump_path, 'w') as f:
+                json.dump({
+                    'bpm': OUT_BPM,
+                    'onsets': sorted_onsets,
+                    'hands': [video_notes[i][1] for i in order],
+                    'notes': [video_notes[i][0] for i in order],
+                }, f)
+
+        # Default is viterbi fed the shared *effective* BPM: 'simple' snaps
+        # each onset independently, so frame jitter can flip a borderline
+        # onset one 16th off and break visually-identical repeating bars
+        # (Billie Jean intro: simple 4/64 bad intervals, viterbi@effective
+        # 0/64; Beat It syncopation preserved note-for-note — see
+        # .agents/investigations/rhythm-quantization-pattern-drift.md).
+        quantizer = getattr(args, 'quantizer', None) or 'viterbi'
         if quantizer == 'simple':
             on_g_sorted = list(quantize_onsets_simple(
                 sorted_onsets, OUT_BPM,
@@ -341,14 +417,16 @@ def main():
                 local_bpm_lookup=shared_local_bpm,
             ))
         elif quantizer == 'viterbi':
-            on_g_sorted = list(quantize_onsets_viterbi(sorted_onsets, OUT_BPM))
+            on_g_sorted = list(quantize_onsets_viterbi(
+                sorted_onsets, shared_effective_bpm, subdivisions=SUB))
         elif quantizer == 'adaptive':
             on_g_sorted = list(quantize_onsets_adaptive(sorted_onsets, OUT_BPM))
         elif quantizer == 'pll':
             on_g_sorted = list(quantize_onsets_pll(sorted_onsets, OUT_BPM,
                                                     subdivisions=SUB))
         else:
-            on_g_sorted = list(quantize_onsets_simple(sorted_onsets, OUT_BPM))
+            on_g_sorted = list(quantize_onsets_viterbi(
+                sorted_onsets, shared_effective_bpm, subdivisions=SUB))
 
         # Un-sort back to original index order.
         on_g_all = [0] * len(video_notes)
@@ -367,6 +445,47 @@ def main():
         r_off_grid = [off_g_all[i] for i in right_indices]
         l_on_grid = [on_g_all[i] for i in left_indices]
         l_off_grid = [off_g_all[i] for i in left_indices]
+
+        # Decollide: two same-hand notes of *different* pitches that
+        # quantize to the same on-grid are real consecutive strikes whose
+        # raw timings happened to round together. Shift the earlier-in-
+        # raw-time ones back by 1/16th-note grid steps so they read as
+        # sequential, not as a simultaneous chord.
+        # Only shift apart notes whose RAW onsets were genuinely
+        # sequential — same-tick same-raw-time notes are real chords and
+        # must stay together. Threshold = half a 16th note (well above
+        # frame-jitter for chord onsets, well below any real 16th gap).
+        sixteenth_grid = max(1, SUB // 4)
+        chord_window_sec = 7.5 / OUT_BPM  # half a 16th note
+
+        def _decollide(on_grid, off_grid, indices_local):
+            by_pos = {}
+            for j in range(len(indices_local)):
+                by_pos.setdefault(on_grid[j], []).append(j)
+            for pos, group in by_pos.items():
+                if len(group) <= 1:
+                    continue
+                pitches = {video_notes[indices_local[j]][0] for j in group}
+                if len(pitches) <= 1:
+                    continue
+                group.sort(key=lambda j: video_notes[indices_local[j]][2])
+                latest_raw = video_notes[indices_local[group[-1]]][2]
+                # Skip notes whose raw onset is within the chord window —
+                # those are intentional chord mates of the latest one.
+                shift_targets = [
+                    j for j in group[:-1]
+                    if (latest_raw - video_notes[indices_local[j]][2])
+                       > chord_window_sec
+                ]
+                for k, j in enumerate(reversed(shift_targets)):
+                    new_on = pos - (k + 1) * sixteenth_grid
+                    if new_on < 0:
+                        continue
+                    on_grid[j] = new_on
+                    off_grid[j] = pos
+
+        _decollide(r_on_grid, r_off_grid, right_indices)
+        _decollide(l_on_grid, l_off_grid, left_indices)
 
         # start_beat: grid units to add after quantization
         # (subdivisions per beat * beats of silence before first note)
@@ -501,6 +620,7 @@ def main():
         ('left', args.left_hand, 'left_events'),
     ]:
         evts = locals()[events_ref]
+        evts = dedup_same_tick_pitch(evts)
         if hand_mode == 'no-overlap':
             evts = remove_overlaps(evts)
             print(f"No-overlap {hand_name} hand: held notes cut at next onset, chords kept")
@@ -557,6 +677,11 @@ def main():
         out_mid.tracks[0].insert(0, MetaMessage('time_signature', numerator=num, denominator=den, time=0))
 
     out_mid.save(args.output)
+
+    if getattr(args, 'lead_sheet', False):
+        from piano_video_scribe.lead_sheet import save_lead_sheet
+        ts = tuple(map(int, args.time_sig.split('/'))) if args.time_sig else (4, 4)
+        save_lead_sheet(args.output, right_events, left_events, OUT_US_PER_BEAT, OUT_TPB, ts)
 
     rn = sum(1 for e in right_events if e[1] == 'note_on')
     ln = sum(1 for e in left_events if e[1] == 'note_on')

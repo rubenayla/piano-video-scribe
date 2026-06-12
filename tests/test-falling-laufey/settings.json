@@ -7,5 +7,5 @@
   "key": "Db",
   "transpose": 0,
   "detector": "falling-blocks",
-  "quantizer": "adaptive"
+  "quantizer": "viterbi"
 }

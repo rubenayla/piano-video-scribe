@@ -3,13 +3,30 @@
 
 ## TODO
 
-## TODO
+- **test3 regression tests ERROR: mido rejects key `'Dbm'`** — `tests/test3/settings.json` has `"key": "Dbm"`, but D♭ minor is not a valid MIDI key signature (mido raises `ValueError: invalid key 'Dbm'` when writing the meta message). Either map enharmonic keys to valid ones before writing (`Dbm` → `C#m`) in midi_output, or fix the settings file. Pre-existing, surfaced 2026-06-11 during the quantizer work; NOT related to quantization.
+
+- **Keys detector merges rapid repeated strikes & holds noise tails (Magic School Bus)**
+  - Symptoms on `~/piano/songs/the-magic-school-bus-theme-original-1994/video-1080p.mp4` (BPM 119, key E):
+    - RH E4 at video t=7.97s reported as one 0.76s held note; the video shows 4 separate E strikes (16th-note run). Detector merges them.
+    - LH B2 at video t=10.49s reported as 2.02s held; user states it's not held that long musically (the key does flip on/off in the actual video — user reviewed t≈8s frame and confirmed separate strikes are visible in the falling-bar pattern).
+    - RH F#5 at video t=18.69s reported (0.13s) but visually only G5 (immediately right) is lit; F#5's narrow black-key sample column is picking up adjacent G5 white-key glow. Likely a separate, simpler bug.
+  - Root cause attempt #1 (commit f97b904 — currently on main, needs revisiting): added in-loop re-strike rising-edge detection + relative-peak floor truncation in `piano_video_scribe/detectors/keys.py`. Heuristic shape is correct but **does not fire on real signal** because `KeySampler` in `piano_video_scribe/backend.py` uses `v_min=30` to mask dim pixels then averages bright ones — the resulting per-key signal is flat (e.g. E4 stayed at 146.1 for the whole 0.76s span, B2 stayed at 84.0 for the whole 2.02s span). All within-note variation is filtered out by KeySampler before keys.py ever sees it.
+  - Standalone proof that the variation IS in the video: a narrow-column raw-mean trace (no v_min mask, x±4 strip) at the same pixels shows clear valleys/restrikes for E4 (peaks ~140 with dips to ~98–108 between strikes) and a brief spike-then-decay for B2 (sat 83→50→30 within ~100ms of strike, never re-rising). See `/tmp/fix_midi.py` (the post-hoc patcher that successfully split E4 into 3 strikes and trimmed B2 from 2.02s to 1.33s).
+  - Two candidate fixes (decide in plan mode):
+    1. **Second sampling channel in `KeySampler`**: expose an unfiltered narrow-column mean alongside the existing v_min-filtered mean. keys.py uses unfiltered for re-strike + peak-floor; filtered for on/off thresholding.
+    2. **Post-extraction refinement pass**: after `extract_notes_from_video`, for each note with dur > 0.30s, re-trace its pitch's narrow column over [onset, offset] using a raw mean (no v_min) and apply the rising-edge / peak-floor heuristics to split or trim. Slower but isolates the change to a single new module without touching the hot loop.
+  - Pre-existing 2 failing tests (`test-falling-laufey`) are unrelated to this and live on main already.
+  - For F#5 specifically: separate root cause (black-key column overlapping adjacent white-key glow). Likely needs stricter neighbor-ratio suppression or shifting F#5's sample x by half a pitch to dodge G5's edge.
 
 - **Improve `estimate_local_bpm` convergence**
   - Currently uses median filter (window=7) + rate limiter to reject garbage BPM estimates from mis-rounded grid positions
   - Removing them entirely causes regressions (test3, test4) because garbage values pass through
   - The real fix: don't depend on initial grid positions for BPM estimation (chicken-and-egg problem)
   - Possible approach: use Viterbi grid positions (more robust), or estimate BPM from intervals without grid_step
+
+## Done (2026-06-11)
+
+- **[HIGH] Identical repeating patterns render with shifting/wrong rhythm — FIXED.** Default quantizer changed `simple` → `viterbi` fed the shared *effective* BPM (pipeline.py dispatch). Billie Jean intro gate passes end-to-end (`{480: 64}`, zero exceptions); Beat It output byte-identical to the validated simple baseline (syncopation intact); Laufey RH now 0 GT mismatches (was 2 with simple, 18 with adaptive). Regression test added: `test_billie_jean_intro_equal_intervals_viterbi` in tests/test_quantization.py (real frozen onsets). Resolution details in `.agents/investigations/rhythm-quantization-pattern-drift.md`. The user's Billie Jean MIDI + PDF in `~/piano/songs/billie-jean-michael-jackson/` regenerated and visually verified.
 
 ## Done (2026-03-31)
 

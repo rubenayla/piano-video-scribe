@@ -372,6 +372,58 @@ def test_simple_quantizer_stable_end_of_bar_onset():
     assert grid == expected, f"grid={grid}, expected={expected}"
 
 
+# ---------------------------------------------------------------------------
+# Billie Jean intro regression — identical repeating patterns must quantize
+# to identical intervals.
+#
+# Real pre-quantization detector onsets (seconds, sorted, combined hands)
+# from ~/piano/songs/billie-jean-michael-jackson/video.mp4 at nominal
+# 117 BPM. The left hand is a metronomically steady stream of eighth
+# notes, so after quantization every LH inter-onset interval must be
+# exactly 2 sixteenths — zero exceptions. The old default 'simple'
+# quantizer snapped onsets independently and produced 4/64 wrong
+# intervals here; this is the bug that made repeating bars engrave
+# differently. Full brief:
+# .agents/investigations/rhythm-quantization-pattern-drift.md
+# ---------------------------------------------------------------------------
+
+BILLIE_JEAN_INTRO_ONSETS = [
+    0.0, 0.2667, 0.5333, 0.7667, 1.0333, 1.3, 1.5667, 1.8, 2.0667, 2.3333,
+    2.6, 2.8333, 3.1, 3.3667, 3.6333, 3.8667, 4.1333, 4.4, 4.6667, 4.9,
+    5.1667, 5.4333, 5.7, 5.9667, 6.2, 6.4667, 6.7333, 7.0, 7.2333, 7.5,
+    7.7667, 8.0333, 8.2667, 8.5333, 8.8, 9.0667, 9.3, 9.5667, 9.8333, 10.1,
+    10.3333, 10.6, 10.8667, 11.1333, 11.4, 11.6333, 11.9, 12.1667, 12.4333,
+    12.6667, 12.9333, 13.2, 13.4667, 13.7, 13.9667, 14.2333, 14.5, 14.7333,
+    15.0, 15.2667, 15.5333, 15.7667, 16.0333, 16.3, 16.5667, 16.5667,
+    16.5667, 16.5667, 16.8333,
+]
+# 1 = left hand, 0 = right hand (the three RH notes are the first chord).
+BILLIE_JEAN_INTRO_HANDS = [
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1,
+]
+
+
+def test_billie_jean_intro_equal_intervals_viterbi():
+    """Steady LH eighths must come out as 64 identical 2-sixteenth intervals.
+
+    Mirrors the pipeline's default path: refine the nominal BPM on the
+    combined onsets, quantize in one shared pass with viterbi, then split
+    the left hand back out and check its inter-onset intervals.
+    """
+    from collections import Counter
+
+    eff = _refine_bpm_for_grid(BILLIE_JEAN_INTRO_ONSETS, 117.0)
+    grid = quantize_onsets_viterbi(BILLIE_JEAN_INTRO_ONSETS, eff)
+    lh = sorted({p for p, h in zip(grid, BILLIE_JEAN_INTRO_HANDS) if h == 1})
+    intervals = [lh[i] - lh[i - 1] for i in range(1, len(lh))][:64]
+    assert intervals == [2] * 64, (
+        f"Identical input pattern quantized non-identically: "
+        f"interval histogram {dict(Counter(intervals))}, want {{2: 64}}"
+    )
+
+
 if __name__ == "__main__":
     print("=== Naive round-to-nearest-16th baseline ===")
     score = run_quantization_test(_naive_quantize, bpm=90)

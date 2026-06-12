@@ -51,7 +51,11 @@ def midi():
 
 
 def _extract_note_events(track, max_tick=None):
-    """Extract (tick, midi_note) for all note-on events, optionally up to max_tick."""
+    """Extract (tick, midi_note) for all note-on events, optionally up to max_tick.
+
+    Sorted by (tick, note): the emission order of chord notes sharing a tick
+    is not musically meaningful and must not count as a mismatch.
+    """
     abs_tick = 0
     events = []
     for msg in track:
@@ -60,7 +64,7 @@ def _extract_note_events(track, max_tick=None):
             break
         if msg.type == 'note_on' and msg.velocity > 0:
             events.append((abs_tick, msg.note))
-    return events
+    return sorted(events)
 
 
 class TestLaufeyGroundTruth:

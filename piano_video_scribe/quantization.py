@@ -119,6 +119,19 @@ def build_shared_warp_lookup(onset_secs, effective_bpm):
         avg = (local_bpms[i - 1] + local_bpms[i]) / 2.0
         warped.append(warped[-1] + dt * avg / effective_bpm)
 
+    # Preserve the GLOBAL tempo: the warp must only redistribute timing locally
+    # (correct passages that rush/drag), never change the overall rate — that is
+    # `effective_bpm`'s job. Any small constant bias in the local-BPM estimate
+    # otherwise applies a steady stretch that accumulates into bar drift (the
+    # Beat It case: clean 138 data warped into a 137.5-drifting grid, ~1.5 beats
+    # over the song). Rescaling the warped span back to the raw span makes a
+    # constant-tempo warp the identity while keeping genuine local corrections.
+    raw_span = sorted_onsets[-1] - sorted_onsets[0]
+    warp_span = warped[-1] - warped[0]
+    if warp_span > 1e-9:
+        scale = raw_span / warp_span
+        warped = [warped[0] + (w - warped[0]) * scale for w in warped]
+
     def lookup(t):
         if t <= sorted_onsets[0]:
             # Extrapolate using the first segment's local rate.
@@ -306,16 +319,24 @@ def quantize_onsets_pll(onset_secs, bpm, alpha=0.1, alpha_period=0.05,
     return results
 
 
-def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
-    """Viterbi DP quantizer: snap onsets to 16th-note grid positions.
+def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1, subdivisions=4):
+    """Viterbi DP quantizer: snap onsets to grid positions.
 
     Finds the globally optimal assignment of grid positions that minimises
     a weighted combination of per-interval error and absolute-position error.
     Then refines ambiguous intervals by testing floor/ceil flips.
 
-    100% accuracy on test data (vs 97% PLL, 91% global-fit).
+    Pass the *effective* (drift-corrected) BPM, not the nominal one: a
+    1-BPM grid error accumulates phase over a long steady passage and
+    eventually flips an onset to the adjacent grid slot (measured on the
+    Billie Jean intro: nominal 117 → 1 defect, effective 116 → 0).
+
+    Args:
+        subdivisions: grid units per beat. 4 = 16th notes (default),
+            12 = combined straight+triplet grid (invalid positions are
+            snapped to the nearest musical slot, like the PLL quantizer).
     """
-    s = 60.0 / bpm / 4  # sixteenth note duration
+    s = 60.0 / bpm / subdivisions  # grid unit duration
     n = len(onset_secs)
     if n == 0:
         return []
@@ -375,6 +396,19 @@ def quantize_onsets_viterbi(onset_secs, bpm, abs_weight=0.1):
                 for j in range(i, n):
                     positions[j] += shift
                 changed = True
+
+    # Combined grid (subdivisions=12): snap to valid musical positions per
+    # beat — straight 0,3,6,9 ∪ triplet 0,4,8 → {0,3,4,6,8,9}. Eliminates
+    # quintuplet (5) and septuplet (7) slots, same as the PLL quantizer.
+    if subdivisions == 12:
+        valid_per_beat = [0, 3, 4, 6, 8, 9]
+        snapped = []
+        for idx in positions:
+            beat = idx // 12
+            pos_in_beat = idx % 12
+            best = min(valid_per_beat, key=lambda v: abs(v - pos_in_beat))
+            snapped.append(beat * 12 + best)
+        positions = snapped
 
     return positions
 
