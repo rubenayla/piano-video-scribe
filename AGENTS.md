@@ -21,7 +21,7 @@ Output: /path/to/output.mid
 1. **`.agents/pipeline.md`** — Full pipeline: YouTube URL → PDF sheet music (commands, calibration, known quirks)
 2. **`.agents/notes.md`** — Experiment findings, technical insights
 3. **`.agents/error-log.md`** — Mistakes and lessons learned
-4. **`.agents/tasks.md`** — Task board (TODO / In Progress / Done)
+4. **`tasks.md`** (repo root) — Task board (TODO / In Progress / Done). One `tasks.md` per repo, always at the root — there is no `.agents/tasks.md`.
 5. **`history.md`** — Dated debug-session log (root causes, fixes, results)
 
 See `.agents/README.md` for the full index.

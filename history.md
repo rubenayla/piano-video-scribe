@@ -121,3 +121,13 @@ The recurring "identical bars engrave differently / tempo shifts" bug (Billie Je
 - Regression test with real frozen onsets: `test_billie_jean_intro_equal_intervals_viterbi`.
 - Verification protocol that catches this class of bug (now demonstrated): inter-onset interval histogram on a known-repeating passage, asserted numerically — pitch spot-checks alone are blind to it.
 - User's Billie Jean deliverables regenerated (`~/piano/songs/billie-jean-michael-jackson/`: .mid + .pdf + summary.png), PDF visually verified — intro bars 1–8 now identical.
+
+## 2026-07-16 — tasks.md consolidated to the repo root; `.agents/tasks.md` retired
+
+`.agents/tasks.md` was moved to `tasks.md` at the repo root with `git mv`, so the file's history follows it. `.agents/tasks.md` no longer exists in this repo and must not be recreated — the rule is one `tasks.md` per repo, at the root.
+
+Rationale: tasks are the project's tasks regardless of who does them. Two files named `tasks.md` only produce duplicates and stale entries, because whichever one the current session isn't reading quietly goes out of date.
+
+Updated to match: `AGENTS.md` "Key Files" entry 4 now points at the root `tasks.md`, and `.agents/README.md` states the board is not in `.agents/`.
+
+Stale `.agents/tasks.md` paths in append-only records (this file, `.agents/error-log.md`, and the dated write-ups under `.agents/investigations/`) were deliberately left as written — they were accurate on the date they were logged, and rewriting them would falsify the record.
