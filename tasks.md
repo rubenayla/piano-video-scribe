@@ -1,6 +1,11 @@
 <!-- consult selectively — grep, never read in full -->
 # Tasks
 
+Done items do not stay on the board. When one closes, move it — with its date and closing note —
+to `tasks/done-archive.md`, which holds nothing actionable. Exception: a done step of a task that is
+still open stays put, since archiving it strips the remaining open step of the context saying what
+was already settled. A cluster moves to the archive whole, once its last step closes.
+
 ## TODO
 
 - **test3 regression tests ERROR: mido rejects key `'Dbm'`** — `tests/test3/settings.json` has `"key": "Dbm"`, but D♭ minor is not a valid MIDI key signature (mido raises `ValueError: invalid key 'Dbm'` when writing the meta message). Either map enharmonic keys to valid ones before writing (`Dbm` → `C#m`) in midi_output, or fix the settings file. Pre-existing, surfaced 2026-06-11 during the quantizer work; NOT related to quantization.
